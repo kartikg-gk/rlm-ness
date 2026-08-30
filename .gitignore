@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+node_modules/
+traces/
+*.jsonl
+.pytest_cache/
+.claude/settings.local.json
+.claude/skills/
+# Notes, specs and tests stay local; only the empty README ships.
+*.md
+!README.md
+docs/
+tests/
+evals/.cache/

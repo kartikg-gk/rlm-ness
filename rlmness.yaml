@@ -1,0 +1,13 @@
+primary_agent: z-ai/glm-5
+max_steps: 8
+truncate_len: 10000
+timeout: 120
+max_depth: 3
+max_calls: 60
+max_cost: 0.5
+max_concurrent: 8
+max_live: 16
+runtime: subprocess
+api_max_retries: 3
+api_backoff: 0.5
+max_seconds: 900
