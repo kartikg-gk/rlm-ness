@@ -13,7 +13,7 @@ dev = ["pytest>=8.0"]
 evals = ["datasets>=2.14"]
 
 [project.scripts]
-rlm = "rlmness.console:main"
+rlmness = "rlmness.console:main"
 
 [build-system]
 requires = ["setuptools>=68"]
