@@ -38,7 +38,10 @@ def _install_tools(specs_json):
     for spec in json.loads(specs_json):
         name = spec["name"]
         exec(spec["source"], globals())
-        globals()[name] = _checked(name, globals()[name])
+        rebuilt = globals()[name]
+        # Only a function has a result to check; a data tool is just a value.
+        if callable(rebuilt):
+            globals()[name] = _checked(name, rebuilt)
 
 def _checked(name, function):
     def tool(*args, **kwargs):

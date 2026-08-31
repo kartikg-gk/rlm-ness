@@ -68,7 +68,10 @@ def _install_tools(specs, namespace):
     for spec in specs:
         name = spec["name"]
         exec(spec["source"], namespace)
-        namespace[name] = _checked(name, namespace[name])
+        rebuilt = namespace[name]
+        # Only a function has a result to check; a data tool is just a value.
+        if callable(rebuilt):
+            namespace[name] = _checked(name, rebuilt)
 
 
 def _checked(name, function):

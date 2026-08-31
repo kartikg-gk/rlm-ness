@@ -137,6 +137,9 @@ class ProtocolRuntime:
 
 
 class SubprocessRuntime(ProtocolRuntime):
+    #: Its own process, so a tool has to be rebuilt from text.
+    NEEDS_SOURCE = True
+
     def __init__(
         self,
         prompt,

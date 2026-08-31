@@ -87,17 +87,20 @@ def _tool_section(tools) -> str:
     """
     if not tools:
         return ""
-    lines = ["", "These functions are already defined in the namespace:", ""]
+    lines = ["", "These names are already bound in the namespace:", ""]
     for tool in tools:
-        lines.append(f"  {tool.name}{tool.signature}")
-        if tool.doc:
-            for line in tool.doc.splitlines():
+        shape = f"{tool.name}{tool.signature}" if tool.callable else tool.name
+        lines.append(f"  {shape}")
+        if tool.description:
+            for line in tool.description.splitlines():
                 lines.append(f"      {line}")
     lines.append("")
-    lines.append(
-        "Call them as you would any function — no await. They return plain "
-        "data: a string, number, list, dict, bool or None."
-    )
+    if any(tool.callable for tool in tools):
+        lines.append(
+            "Call the functions as you would any function — no await needed."
+        )
+    if any(not tool.callable for tool in tools):
+        lines.append("The rest are values; read them directly.")
     return "\n".join(lines) + "\n"
 
 
@@ -111,9 +114,9 @@ def system_prompt(can_recurse: bool = False, tools=()) -> str:
     parts = [_BASE, _FLAT]
     if can_recurse:
         parts.append(_RECURSIVE)
-        parts.append(_BATCHING.format(one="spawn", many="gather_rlm"))
+        parts.append(_BATCHING.format(one="rlm", many="gather_rlm"))
     else:
-        parts.append(_BATCHING.format(one="ask", many="gather_llm"))
+        parts.append(_BATCHING.format(one="llm", many="gather_llm"))
     parts.append(_GUIDANCE)
     parts.append(_tool_section(tools))
     return "".join(parts)

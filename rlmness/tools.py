@@ -1,27 +1,32 @@
-"""Custom tools, prepared on the host so a runtime can define them.
+"""Custom tools, prepared for whichever runtime will hold them.
 
-A tool becomes an ordinary Python function inside the cell namespace, called
-the way any function is called. Nothing about a call crosses the process
-boundary: only the function's source does, once, when the runtime starts.
+A tool becomes an ordinary name in the cell namespace — a function called the
+way any function is called, or a value read the way any value is read. Nothing
+about using one crosses a process boundary.
 
-The cost of that is what a tool may be. It has to be a plain function whose
-source can be read and which stands on its own, because the runtime rebuilds
-it from text rather than receiving the object. A lambda, a builtin, or a
-function closing over something on the host cannot be rebuilt, and each is
-refused here rather than failing later inside a cell.
+What a tool may be depends on where the namespace lives. A runtime sharing this
+interpreter receives the object itself, so anything goes: a lambda, a closure, a
+builtin, a live handle. A runtime in its own process cannot be handed an object
+at all, only the text that rebuilds one, and each thing that text cannot carry
+is refused here rather than failing later inside a cell.
 """
 
 from __future__ import annotations
 
 import inspect
+import json
 import textwrap
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 # Names the runtime binds itself. Handing one to a tool would either shadow a
 # helper or be shadowed by it, and both are worse than refusing.
-RESERVED = frozenset(
-    {"llm", "rlm", "gather_llm", "gather_rlm", "FINAL", "PROMPT"}
+RESERVED = frozenset({"llm", "rlm", "gather_llm", "gather_rlm", "FINAL", "PROMPT"})
+
+UNAVAILABLE = (
+    "source is unavailable. For a runtime in its own process a tool has to be "
+    "a plain function defined in a file — not a lambda, a builtin, or something "
+    "defined in a REPL."
 )
 
 
@@ -32,69 +37,107 @@ class ToolError(Exception):
 @dataclass(frozen=True)
 class Tool:
     name: str
+    value: Any
+    description: str
     signature: str
-    doc: str
-    source: str
+    callable: bool
+    #: Text that rebuilds the tool. None where the runtime takes the object.
+    source: str | None = None
 
 
-UNAVAILABLE = (
-    "source is unavailable. A tool has to be a plain function defined in a "
-    "file — not a lambda, a builtin, or something defined in a REPL."
-)
-
-
-def _source_of(name: str, function: Callable) -> str:
-    # A lambda's source is whatever line it appeared on, which is not a
-    # definition the runtime can execute. Catch it before reading anything.
-    if getattr(function, "__name__", "") == "<lambda>":
-        raise ToolError(f"tool {name!r}: {UNAVAILABLE}")
-    try:
-        return textwrap.dedent(inspect.getsource(function))
-    except (OSError, TypeError) as missing:
-        raise ToolError(f"tool {name!r}: {UNAVAILABLE}") from missing
+def _unpack(entry: Any) -> tuple[Any, str | None]:
+    """Accept a bare value or {"tool": ..., "description": ...}."""
+    if isinstance(entry, Mapping) and "tool" in entry:
+        return entry["tool"], entry.get("description")
+    return entry, None
 
 
 def _reject_closures(name: str, function: Callable) -> None:
-    captured = getattr(function, "__code__", None)
-    if captured is not None and captured.co_freevars:
-        names = ", ".join(captured.co_freevars)
+    code = getattr(function, "__code__", None)
+    if code is not None and code.co_freevars:
+        names = ", ".join(code.co_freevars)
         raise ToolError(
-            f"tool {name!r}: closes over {names}. The runtime rebuilds a tool "
-            f"from its source, where a free variable of the host does not exist. "
-            f"Pass the value as an argument or read it inside the function."
+            f"tool {name!r}: closes over {names}. A runtime in its own process "
+            f"rebuilds a tool from its source, where a free variable of the "
+            f"caller does not exist. Pass the value as an argument, read it "
+            f"inside the function, or use a runtime that shares this process."
         )
 
 
-def describe(tools: Mapping[str, Callable] | None) -> list[Tool]:
-    """Check the tools and prepare what a runtime needs to define them."""
+def _function_source(name: str, function: Callable) -> str:
+    # A lambda's source is whatever line it appeared on, which is not a
+    # definition a runtime can execute. Catch it before reading anything.
+    if getattr(function, "__name__", "") == "<lambda>":
+        raise ToolError(f"tool {name!r}: {UNAVAILABLE}")
+    _reject_closures(name, function)
+    try:
+        text = textwrap.dedent(inspect.getsource(function))
+    except (OSError, TypeError) as missing:
+        raise ToolError(f"tool {name!r}: {UNAVAILABLE}") from missing
+
+    # The key is what the model calls, which need not be what the function was
+    # defined as.
+    defined_as = getattr(function, "__name__", name)
+    return text if defined_as == name else f"{text}\n{name} = {defined_as}\n"
+
+
+def _value_source(name: str, value: Any) -> str:
+    try:
+        return f"{name} = {json.dumps(value)}\n"
+    except (TypeError, ValueError) as unserialisable:
+        raise ToolError(
+            f"tool {name!r}: a {type(value).__name__} cannot be carried as JSON, "
+            f"so a runtime in its own process cannot be given it. Use plain data, "
+            f"or a runtime that shares this process."
+        ) from unserialisable
+
+
+def describe(
+    tools: Mapping[str, Any] | None, *, need_source: bool = True
+) -> list[Tool]:
+    """Check the tools and prepare what a runtime needs to install them.
+
+    `need_source` is what the runtime asks for. A runtime rebuilding tools from
+    text needs it and accepts less; one taking the objects does not and accepts
+    anything.
+    """
     if not tools:
         return []
 
     prepared = []
-    for name, function in tools.items():
+    for name, entry in tools.items():
+        value, described = _unpack(entry)
+
         if not str(name).isidentifier():
             raise ToolError(f"tool name {name!r} is not a Python identifier")
         if name in RESERVED:
             raise ToolError(
                 f"tool name {name!r} is already bound by the runtime; choose another"
             )
-        if not callable(function):
-            raise ToolError(f"tool {name!r} is not callable")
 
-        _reject_closures(name, function)
-        source = _source_of(name, function)
+        is_callable = callable(value)
+        if is_callable:
+            signature = str(inspect.signature(value))
+            description = described or inspect.getdoc(value) or ""
+        else:
+            signature = ""
+            description = described or ""
 
-        # The key is what the model calls, which need not be what the function
-        # was defined as.
-        defined_as = getattr(function, "__name__", name)
-        if defined_as != name:
-            source = f"{source}\n{name} = {defined_as}\n"
+        source = None
+        if need_source:
+            source = (
+                _function_source(name, value)
+                if is_callable
+                else _value_source(name, value)
+            )
 
         prepared.append(
             Tool(
                 name=name,
-                signature=str(inspect.signature(function)),
-                doc=inspect.getdoc(function) or "",
+                value=value,
+                description=description,
+                signature=signature,
+                callable=is_callable,
                 source=source,
             )
         )

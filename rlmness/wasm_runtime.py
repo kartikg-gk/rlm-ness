@@ -14,6 +14,9 @@ _ROOT = str(Path(__file__).resolve().parents[1])
 
 
 class WasmRuntime(ProtocolRuntime):
+    #: Its own process, so a tool has to be rebuilt from text.
+    NEEDS_SOURCE = True
+
     def __init__(
         self,
         prompt,

@@ -15,9 +15,14 @@ from .config import Config, load_config
 from .briefing import opening_message, system_prompt
 from .wasm_runtime import WasmRuntime
 from .tools import describe
+from .in_process import InProcessRuntime
 from .runtime import SubprocessRuntime
 
-RUNTIMES = {"subprocess": SubprocessRuntime, "wasm": WasmRuntime}
+RUNTIMES = {
+    "subprocess": SubprocessRuntime,
+    "wasm": WasmRuntime,
+    "in-process": InProcessRuntime,
+}
 
 _FENCE = re.compile(r"```([A-Za-z0-9_.+-]*)[ \t]*\r?\n(.*?)```", re.S)
 PYTHON_TAGS = {"", "python", "py", "python3"}
@@ -123,8 +128,12 @@ def solve(
     config = config or load_config()
     runtime_factory = runtime_factory or RUNTIMES[config.runtime]
     # Validated here rather than inside a cell: a bad tool is a caller's
-    # mistake and should surface before a single call is paid for.
-    prepared = describe(tools)
+    # mistake and should surface before a single call is paid for. What counts
+    # as bad depends on the runtime, which says whether it rebuilds tools from
+    # text or takes the objects.
+    prepared = describe(
+        tools, need_source=getattr(runtime_factory, "NEEDS_SOURCE", True)
+    )
     allowance = allowance if allowance is not None else Allowance.from_config(config)
     model = config.model_for(depth)
     can_recurse = config.enable_delegation and allowance.can_recurse(depth)
