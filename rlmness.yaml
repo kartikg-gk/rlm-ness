@@ -11,3 +11,5 @@ runtime: subprocess
 api_max_retries: 3
 api_backoff: 0.5
 max_seconds: 900
+max_completion_tokens: 50000
+max_prompt_tokens: 200000

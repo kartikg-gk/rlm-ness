@@ -28,8 +28,14 @@ class Allowance:
     max_cost: float = 0.5
     max_live: int = 16
     max_seconds: float | None = None
+    # Token ceilings are off unless asked for. Tokens are what a provider
+    # always reports, so these hold where a price is never sent.
+    max_completion_tokens: int | None = None
+    max_prompt_tokens: int | None = None
     calls: int = 0
     cost: float = 0.0
+    completion_tokens: int = 0
+    prompt_tokens: int = 0
     unpriced_calls: int = 0
     # A batch reserves and settles from several threads at once.
     _lock: threading.Lock = field(
@@ -53,6 +59,8 @@ class Allowance:
             max_cost=config.max_cost,
             max_live=getattr(config, "max_live", 16),
             max_seconds=getattr(config, "max_seconds", None),
+            max_completion_tokens=getattr(config, "max_completion_tokens", None),
+            max_prompt_tokens=getattr(config, "max_prompt_tokens", None),
         )
 
     def reserve(self) -> None:
@@ -79,6 +87,22 @@ class Allowance:
                 raise AllowanceSpent(
                     f"cost {self.cost:.4f} reaches the limit of {self.max_cost}"
                 )
+            if (
+                self.max_completion_tokens is not None
+                and self.completion_tokens >= self.max_completion_tokens
+            ):
+                raise AllowanceSpent(
+                    f"{self.completion_tokens} completion tokens reaches the "
+                    f"limit of {self.max_completion_tokens}"
+                )
+            if (
+                self.max_prompt_tokens is not None
+                and self.prompt_tokens >= self.max_prompt_tokens
+            ):
+                raise AllowanceSpent(
+                    f"{self.prompt_tokens} prompt tokens reaches the limit of "
+                    f"{self.max_prompt_tokens}"
+                )
             self.calls += 1
 
     def settle(self, usage: Spend) -> None:
@@ -93,6 +117,8 @@ class Allowance:
         the gap can be reported instead of being mistaken for a small bill.
         """
         with self._lock:
+            self.completion_tokens += usage.completion_tokens
+            self.prompt_tokens += usage.prompt_tokens
             if usage.cost is None:
                 self.unpriced_calls += 1
             else:

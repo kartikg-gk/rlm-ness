@@ -27,6 +27,8 @@ class Config:
     max_concurrent: int = 8
     max_live: int = 16
     max_seconds: float | None = None
+    max_completion_tokens: int | None = None
+    max_prompt_tokens: int | None = None
     runtime: str = "subprocess"
     provider: str = "openrouter"
     api_max_retries: int = 3
@@ -77,6 +79,16 @@ def load_config(
         max_live=int(raw.get("max_live", defaults.max_live)),
         max_seconds=(
             float(raw["max_seconds"]) if raw.get("max_seconds") is not None else None
+        ),
+        max_completion_tokens=(
+            int(raw["max_completion_tokens"])
+            if raw.get("max_completion_tokens") is not None
+            else None
+        ),
+        max_prompt_tokens=(
+            int(raw["max_prompt_tokens"])
+            if raw.get("max_prompt_tokens") is not None
+            else None
         ),
         # Caller beats file: the caller has already folded in the flag and the
         # environment, both of which are more specific than a checked-in file.

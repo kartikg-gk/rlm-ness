@@ -14,6 +14,7 @@ evals = ["datasets>=2.14"]
 
 [project.scripts]
 rlmness = "rlmness.console:main"
+rlmness-viewlog = "rlmness.viewlog:main"
 
 [build-system]
 requires = ["setuptools>=68"]
