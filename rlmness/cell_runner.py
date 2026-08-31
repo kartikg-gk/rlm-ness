@@ -56,6 +56,40 @@ def _make_proxy(name):
     return proxy
 
 
+def _install_tools(specs, namespace):
+    """Define each tool here, so calling one never leaves this process.
+
+    The result is checked against what JSON can carry. Nothing forces that —
+    the value goes straight to code in this same namespace — but a tool that
+    hands back something only one runtime could produce would behave
+    differently depending on which is underneath, and that is worse than a
+    refusal the model can read.
+    """
+    for spec in specs:
+        name = spec["name"]
+        exec(spec["source"], namespace)
+        namespace[name] = _checked(name, namespace[name])
+
+
+def _checked(name, function):
+    def tool(*args, **kwargs):
+        value = function(*args, **kwargs)
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            raise TypeError(
+                f"tool {name!r} returned {type(value).__name__}, which cannot be "
+                f"carried as JSON. Return plain data — a string, number, list, "
+                f"dict, bool or None."
+            ) from None
+        return value
+
+    tool.__name__ = getattr(function, "__name__", name)
+    tool.__doc__ = function.__doc__
+    tool.__wrapped__ = function
+    return tool
+
+
 def _exec_cell(code, namespace):
     buffer = io.StringIO()
     final, has_final, error = None, False, None
@@ -91,6 +125,7 @@ def main():
         raise _Answered(answer)
 
     namespace["FINAL"] = FINAL
+    _install_tools(init.get("tools", []), namespace)
     _write({"op": "ready"})
 
     while True:

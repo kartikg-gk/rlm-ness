@@ -31,6 +31,32 @@ def _make_proxy(name):
         return reply.get("value")
     return proxy
 
+def _install_tools(specs_json):
+    # Defined here, inside the guest, so calling one never leaves WebAssembly.
+    # The result is checked against what JSON can carry so a tool behaves the
+    # same here as it does under the subprocess runtime.
+    for spec in json.loads(specs_json):
+        name = spec["name"]
+        exec(spec["source"], globals())
+        globals()[name] = _checked(name, globals()[name])
+
+def _checked(name, function):
+    def tool(*args, **kwargs):
+        value = function(*args, **kwargs)
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            raise TypeError(
+                f"tool {name!r} returned {type(value).__name__}, which cannot be "
+                f"carried as JSON. Return plain data — a string, number, list, "
+                f"dict, bool or None."
+            ) from None
+        return value
+    tool.__name__ = getattr(function, "__name__", name)
+    tool.__doc__ = function.__doc__
+    tool.__wrapped__ = function
+    return tool
+
 async def _exec_cell(src):
     buf = io.StringIO()
     final, has_final, error = None, False, None
@@ -90,6 +116,10 @@ async function main() {
         py.globals.set("_bridge_name", name);
         await py.runPythonAsync("globals()[_bridge_name] = _make_proxy(_bridge_name)\n");
       }
+      // Only the source crosses, and only now. A later call to a tool is an
+      // ordinary Python call that never reaches back out here.
+      py.globals.set("_TOOLS_JSON", JSON.stringify(msg.tools ?? []));
+      await py.runPythonAsync("_install_tools(_TOOLS_JSON)\n");
       send({ op: "ready" });
       return;
     }

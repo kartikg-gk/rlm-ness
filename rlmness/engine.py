@@ -7,13 +7,14 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .providers import ModelClient, Spend
 from .limits import Allowance, Abandoned
 from .config import Config, load_config
 from .briefing import opening_message, system_prompt
 from .wasm_runtime import WasmRuntime
+from .tools import describe
 from .runtime import SubprocessRuntime
 
 RUNTIMES = {"subprocess": SubprocessRuntime, "wasm": WasmRuntime}
@@ -117,9 +118,13 @@ def solve(
     allowance: Allowance | None = None,
     depth: int = 0,
     cancel: threading.Event | None = None,
+    tools: Mapping[str, Callable] | None = None,
 ) -> Answer:
     config = config or load_config()
     runtime_factory = runtime_factory or RUNTIMES[config.runtime]
+    # Validated here rather than inside a cell: a bad tool is a caller's
+    # mistake and should surface before a single call is paid for.
+    prepared = describe(tools)
     allowance = allowance if allowance is not None else Allowance.from_config(config)
     model = config.model_for(depth)
     can_recurse = config.enable_delegation and allowance.can_recurse(depth)
@@ -136,7 +141,23 @@ def solve(
         allowance.settle(usage)
         return answer
 
-    def _child(subprompt, instruction=None, token=None):
+    def _for_child(granted):
+        """What a child receives: what the call named, else the configured default.
+
+        A name rather than the function itself, because the model asks from
+        inside the runtime where only the tool's own name exists.
+        """
+        if granted is None:
+            return dict(tools or {}) if config.inherit_tools else None
+        unknown = [name for name in granted if name not in (tools or {})]
+        if unknown:
+            raise RuntimeError(
+                f"cannot grant {unknown!r}: this agent has no such tool. "
+                f"Available: {sorted(tools or {})}"
+            )
+        return {name: tools[name] for name in granted}
+
+    def _child(subprompt, instruction=None, token=None, granted=None):
         return solve(
             str(subprompt),
             backend,
@@ -147,12 +168,13 @@ def solve(
             allowance=allowance,
             depth=depth + 1,
             cancel=token,
+            tools=_for_child(granted),
         ).output
 
-    def _rlm(subprompt, instruction=None):
+    def _rlm(subprompt, instruction=None, tools=None):
         if not can_recurse:
             raise RuntimeError(TOO_DEEP)
-        return _child(subprompt, instruction, cancel)
+        return _child(subprompt, instruction, cancel, tools)
 
     def _spread(work, items):
         """Run `work` over `items` concurrently, abandoning the rest on the
@@ -177,10 +199,12 @@ def solve(
             pool.shutdown(wait=False)
             allowance.release_slots(taken)
 
-    def _gather_rlm(subprompts, instruction=None):
+    def _gather_rlm(subprompts, instruction=None, tools=None):
         if not can_recurse:
             raise RuntimeError(TOO_DEEP)
-        return _spread(lambda item, token: _child(item, instruction, token), subprompts)
+        return _spread(
+            lambda item, token: _child(item, instruction, token, tools), subprompts
+        )
 
     def _gather_llm(texts):
         return _spread(lambda item, token: _llm(item), texts)
@@ -189,11 +213,11 @@ def solve(
     if config.enable_delegation:
         bridges.update({"rlm": _rlm, "gather_rlm": _gather_rlm})
     messages = [
-        {"role": "system", "content": system_prompt(can_recurse)},
+        {"role": "system", "content": system_prompt(can_recurse, prepared)},
         {"role": "user", "content": opening_message(prompt, instruction)},
     ]
     total = Spend()
-    runtime = runtime_factory(prompt, bridges, config.timeout)
+    runtime = runtime_factory(prompt, bridges, config.timeout, prepared)
     try:
         for step in range(1, config.max_steps + 1):
             _abort_if_cancelled()

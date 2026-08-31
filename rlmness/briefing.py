@@ -78,7 +78,30 @@ That is what they are for, and it is almost always the shorter path from there.\
 """
 
 
-def system_prompt(can_recurse: bool = False) -> str:
+def _tool_section(tools) -> str:
+    """List the tools by name, signature and description.
+
+    They are ordinary functions in the namespace, so they are described as
+    such — an agent that is told about a helper it cannot reach wastes a turn
+    discovering that, so only what this agent has is listed.
+    """
+    if not tools:
+        return ""
+    lines = ["", "These functions are already defined in the namespace:", ""]
+    for tool in tools:
+        lines.append(f"  {tool.name}{tool.signature}")
+        if tool.doc:
+            for line in tool.doc.splitlines():
+                lines.append(f"      {line}")
+    lines.append("")
+    lines.append(
+        "Call them as you would any function — no await. They return plain "
+        "data: a string, number, list, dict, bool or None."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def system_prompt(can_recurse: bool = False, tools=()) -> str:
     """Describe only what the caller can actually reach.
 
     `llm` and `gather_llm` are flat calls and work at any depth, so a leaf
@@ -92,6 +115,7 @@ def system_prompt(can_recurse: bool = False) -> str:
     else:
         parts.append(_BATCHING.format(one="ask", many="gather_llm"))
     parts.append(_GUIDANCE)
+    parts.append(_tool_section(tools))
     return "".join(parts)
 
 

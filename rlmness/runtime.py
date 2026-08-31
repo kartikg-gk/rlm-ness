@@ -32,7 +32,7 @@ class CellOutcome:
 
 
 class ProtocolRuntime:
-    def __init__(self, process, prompt, bridges, timeout):
+    def __init__(self, process, prompt, bridges, timeout, tools=()):
         self.process = process
         self.timeout = timeout
         self.bridges = dict(bridges)
@@ -40,7 +40,18 @@ class ProtocolRuntime:
         self._inbox: queue.Queue = queue.Queue()
         threading.Thread(target=self._pump, daemon=True).start()
 
-        self._write({"op": "init", "prompt": prompt, "bridges": list(self.bridges)})
+        # Tools travel as source and are defined inside the namespace, so a
+        # call to one never reaches back across this boundary.
+        self._write(
+            {
+                "op": "init",
+                "prompt": prompt,
+                "bridges": list(self.bridges),
+                "tools": [
+                    {"name": tool.name, "source": tool.source} for tool in tools
+                ],
+            }
+        )
         ready = self._receive()
         if ready.get("op") != "ready":
             raise RuntimeGone(f"runtime failed to start: {ready!r}")
@@ -126,7 +137,13 @@ class ProtocolRuntime:
 
 
 class SubprocessRuntime(ProtocolRuntime):
-    def __init__(self, prompt, bridges: Mapping[str, Callable] | Sequence[str] = (), timeout: float = 120.0):
+    def __init__(
+        self,
+        prompt,
+        bridges: Mapping[str, Callable] | Sequence[str] = (),
+        timeout: float = 120.0,
+        tools=(),
+    ):
         environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
         process = subprocess.Popen(
             [sys.executable, "-I", _RUNNER],
@@ -138,4 +155,4 @@ class SubprocessRuntime(ProtocolRuntime):
             bufsize=1,
             env=environment,
         )
-        super().__init__(process, prompt, bridges, timeout)
+        super().__init__(process, prompt, bridges, timeout, tools)

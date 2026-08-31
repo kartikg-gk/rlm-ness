@@ -19,6 +19,7 @@ class WasmRuntime(ProtocolRuntime):
         prompt,
         bridges: Mapping[str, Callable] = (),
         timeout: float = 180.0,
+        tools=(),
         node: str = "node",
     ):
         if shutil.which(node) is None:
@@ -33,7 +34,7 @@ class WasmRuntime(ProtocolRuntime):
             bufsize=1,
             cwd=_ROOT,
         )
-        super().__init__(process, prompt, bridges, timeout)
+        super().__init__(process, prompt, bridges, timeout, tools)
 
 
 def wasm_available(node: str = "node") -> bool:
