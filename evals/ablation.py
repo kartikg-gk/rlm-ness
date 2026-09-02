@@ -51,11 +51,11 @@ class StepCounter:
     def __init__(self):
         self.steps = 0
 
-    def step(self, *, step, code, output, error, usage, depth=0):
+    def step(self, *, step, code, output, error, usage, depth=0, **_ignored):
         if depth == 0:
             self.steps = max(self.steps, step)
 
-    def final(self, result, *, depth=0):
+    def final(self, result, *, depth=0, **_ignored):
         pass
 
 

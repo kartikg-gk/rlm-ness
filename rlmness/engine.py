@@ -5,8 +5,10 @@ from __future__ import annotations
 import ast
 import re
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from .providers import ModelClient, Spend
@@ -97,6 +99,10 @@ def label_output(text: str, limit: int) -> str:
     return f"[FULL OUTPUT SHOWN]... {text}"
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _add(left: Spend, right: Spend) -> Spend:
     # An unknown cost on either side leaves the sum unknown rather than
     # silently reading as free.
@@ -124,8 +130,11 @@ def solve(
     depth: int = 0,
     cancel: threading.Event | None = None,
     tools: Mapping[str, Callable] | None = None,
+    run_id: str | None = None,
+    parent_run_id: str | None = None,
 ) -> Answer:
     config = config or load_config()
+    run_id = run_id or uuid.uuid4().hex
     runtime_factory = runtime_factory or RUNTIMES[config.runtime]
     # Validated here rather than inside a cell: a bad tool is a caller's
     # mistake and should surface before a single call is paid for. What counts
@@ -178,6 +187,7 @@ def solve(
             depth=depth + 1,
             cancel=token,
             tools=_for_child(granted),
+            parent_run_id=run_id,
         ).output
 
     def _rlm(subprompt, instruction=None, tools=None):
@@ -234,11 +244,14 @@ def solve(
     ]
     total = Spend()
     runtime = runtime_factory(prompt, bridges, config.timeout, prepared)
+
     try:
         for step in range(1, config.max_steps + 1):
             _abort_if_cancelled()
             allowance.reserve()
+            llm_call_start = _now()
             text, usage = backend.complete(messages, model=model)
+            llm_call_end = _now()
             allowance.settle(usage)
             total = _add(total, usage)
             messages.append({"role": "assistant", "content": text})
@@ -247,23 +260,27 @@ def solve(
                 budget_banner(step, config.max_steps) if config.enable_step_banner else ""
             )
 
+            timestamps = {"llm_call_start": llm_call_start, "llm_call_end": llm_call_end}
+
             code = first_runnable_block(text)
             if code is None:
-                _log(trace, depth, step, None, NO_CODE, True, usage)
+                _log(trace, depth, run_id, parent_run_id, step, None, NO_CODE, True, usage, timestamps)
                 messages.append({"role": "user", "content": banner + NO_CODE})
                 continue
 
+            timestamps["execution_start"] = _now()
             cell = runtime.execute(code)
+            timestamps["execution_end"] = _now()
             output = cell.stdout + (f"\n{cell.error}" if cell.error else "")
 
             if cell.has_final:
-                _log(trace, depth, step, code, output, False, usage)
+                _log(trace, depth, run_id, parent_run_id, step, code, output, False, usage, timestamps)
                 if trace:
-                    trace.final(cell.final, depth=depth)
+                    trace.final(cell.final, depth=depth, run_id=run_id, parent_run_id=parent_run_id)
                 return Answer(output=cell.final, steps=step, usage=total)
 
             labelled = label_output(output, config.truncate_len)
-            _log(trace, depth, step, code, labelled, bool(cell.error), usage)
+            _log(trace, depth, run_id, parent_run_id, step, code, labelled, bool(cell.error), usage, timestamps)
             messages.append({"role": "user", "content": f"{banner}Output:\n{labelled}"})
 
         raise StepsUsedUp(f"no FINAL() after {config.max_steps} steps")
@@ -271,6 +288,16 @@ def solve(
         runtime.close()
 
 
-def _log(trace, depth, step, code, output, error, usage) -> None:
+def _log(trace, depth, run_id, parent_run_id, step, code, output, error, usage, timestamps) -> None:
     if trace:
-        trace.step(step=step, code=code, output=output, error=error, usage=usage, depth=depth)
+        trace.step(
+            step=step,
+            code=code,
+            output=output,
+            error=error,
+            usage=usage,
+            depth=depth,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            timestamps=timestamps,
+        )
