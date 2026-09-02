@@ -35,6 +35,11 @@ def _parse(argv):
         default=os.environ.get("RLMNESS_PROVIDER"),
         help="which API to call; each reads its own key from the environment",
     )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="watch the run in a terminal dashboard (needs the tui extra)",
+    )
     return parser.parse_args(argv)
 
 
@@ -66,14 +71,43 @@ def main(argv=None, *, backend=None) -> int:
         return 1
 
     trace = Journal()
-    try:
-        result = solve(
-            query,
+    sink = trace
+    if args.dashboard:
+        try:
+            from .dashboard import show
+            from .events import Broadcast, RunTree
+        except ImportError:
+            print(
+                "the dashboard needs textual: pip install 'rlm-ness[tui]'",
+                file=sys.stderr,
+            )
+            return 1
+        live = RunTree()
+        live.query = query
+        # The journal is still written. The dashboard is an extra reader of
+        # the same events, never a replacement for the record.
+        sink = Broadcast(trace, live)
+
+    def run(text: str) -> Answer:
+        return solve(
+            text,
             backend,
             instruction=args.instruction,
             config=config,
-            trace=trace,
+            trace=sink,
         )
+
+    try:
+        if args.dashboard:
+            app = show(live, runner=lambda: run(query), title=config.primary_agent)
+            if app.failure is not None:
+                raise app.failure
+            if app.result is None:
+                print(f"trace: {trace.path}")
+                return 0
+            result = app.result
+        else:
+            result = run(query)
     except Exception as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         print(f"trace: {trace.path}", file=sys.stderr)
