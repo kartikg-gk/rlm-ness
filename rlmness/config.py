@@ -36,6 +36,9 @@ class Config:
     # Ablations. Turn one off to measure what it was worth.
     enable_step_banner: bool = True
     enable_delegation: bool = True
+    # Refuse a first-step answer that never read PROMPT. Off, it is the model's
+    # own judgement whether it has seen enough.
+    enable_first_look_guard: bool = True
     # A child starts with nothing its parent did not hand it. Turning this on
     # makes a child receive its parent's tools when the call does not say.
     inherit_tools: bool = False
@@ -100,5 +103,8 @@ def load_config(
             raw.get("enable_step_banner", defaults.enable_step_banner)
         ),
         enable_delegation=bool(raw.get("enable_delegation", defaults.enable_delegation)),
+        enable_first_look_guard=bool(
+            raw.get("enable_first_look_guard", defaults.enable_first_look_guard)
+        ),
         inherit_tools=bool(raw.get("inherit_tools", defaults.inherit_tools)),
     )
