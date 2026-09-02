@@ -15,7 +15,13 @@ from typing import Any, Callable, Mapping
 from .providers import ModelClient, Spend, combine
 from .limits import Allowance, Abandoned
 from .config import Config, load_config
-from .briefing import PREVIEW, opening_message, shows_everything, system_prompt
+from .briefing import (
+    PREVIEW,
+    opening_code,
+    opening_message,
+    shows_everything,
+    system_prompt,
+)
 from .wasm_runtime import WasmRuntime
 from .tools import describe
 from .in_process import InProcessRuntime
@@ -297,7 +303,6 @@ def solve(
                 sealed=getattr(runtime_factory, "SEALED", False),
             ),
         },
-        {"role": "user", "content": opening_message(prompt, instruction)},
     ]
     total = Spend()
     text_prompt = str(prompt)
@@ -331,7 +336,42 @@ def solve(
             return
         emit(trace, "namespace_changed", run_id=run_id, step=step, variables=variables)
 
+    def _open() -> None:
+        """Look at PROMPT once, before the model is asked for anything.
+
+        The result becomes the first turn of the conversation, as the cell and
+        the output it produced. No model call is made, so this step costs
+        nothing and is recorded with no usage.
+        """
+        opening = opening_code()
+        started = _now()
+        emit(trace, "step_started", run_id=run_id, step=0, started=started)
+        emit(trace, "code_generated", run_id=run_id, step=0, code=opening)
+        cell = runtime.execute(opening)
+        shown = cell.stdout + (f"\n{cell.error}" if cell.error else "")
+        stamps = {"execution_start": started, "execution_end": _now()}
+        emit(
+            trace, "output_received",
+            run_id=run_id, step=0, output=shown, error=bool(cell.error),
+        )
+        _log(trace, depth, run_id, parent_run_id, 0, opening, shown, bool(cell.error), Spend(), stamps)
+        emit(
+            trace, "step_completed",
+            run_id=run_id, step=0, usage=Spend(), error=bool(cell.error),
+            ended=stamps["execution_end"],
+        )
+        _snapshot(0)
+        messages.append(
+            {
+                "role": "user",
+                "content": opening_message(
+                    opening, shown, instruction, config.truncate_len
+                ),
+            }
+        )
+
     try:
+        _open()
         for step in range(1, config.max_steps + 1):
             _abort_if_cancelled()
             allowance.reserve()

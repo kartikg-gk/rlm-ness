@@ -141,7 +141,7 @@ def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False) -> 
 
 
 def shows_everything(prompt) -> bool:
-    """Whether the opening message carried the whole value, not a sample.
+    """Whether the opening carried the whole value, not a sample.
 
     Anything that reasons about what the model has actually been shown has to
     ask here rather than re-deriving the rule, or the two answers drift and
@@ -150,15 +150,40 @@ def shows_everything(prompt) -> bool:
     return len(str(prompt)) <= 2 * PREVIEW
 
 
-def opening_message(prompt, instruction: str | None = None) -> str:
-    text = str(prompt)
-    lines = [
-        f"PROMPT is bound in the namespace. type={type(prompt).__name__} length={len(text)}",
-    ]
-    if not shows_everything(prompt):
-        lines.append(f"first {PREVIEW} chars:\n{text[:PREVIEW]}")
-        lines.append(f"last {PREVIEW} chars:\n{text[-PREVIEW:]}")
-    else:
-        lines.append(f"value:\n{text}")
-    lines.append(f"Task: {instruction}" if instruction else "Task: answer the question in PROMPT.")
-    return "\n\n".join(lines)
+OPENING_CODE = '''print("PROMPT type:", type(PROMPT).__name__)
+print("PROMPT length:", len(PROMPT) if hasattr(PROMPT, "__len__") else "N/A")
+
+if len(str(PROMPT)) > {preview}:
+    print("first {preview} characters of str(PROMPT):", str(PROMPT)[:{preview}])
+    print("---")
+    print("last {preview} characters of str(PROMPT):", str(PROMPT)[-{preview}:])
+else:
+    print("PROMPT:", PROMPT)
+'''
+
+
+def opening_code() -> str:
+    """The cell that looks at PROMPT before the model is asked anything."""
+    return OPENING_CODE.format(preview=PREVIEW)
+
+
+def opening_message(code: str, output: str, instruction: str | None = None,
+                    truncate_len: int = 10000) -> str:
+    """The first turn: a cell that ran, and what it printed.
+
+    Written as an exchange rather than as a description, because the shape of
+    the opening is the shape the model continues. A turn that reads "here is
+    code, here is its output" is followed by more code; a paragraph describing
+    the data is followed by more prose — and prose is how a model ends up
+    answering from the summary it was shown instead of from the data itself.
+
+    It is also true rather than illustrative: this code really ran in the
+    namespace, and the output really is what it printed.
+    """
+    task = instruction or "answer the question in PROMPT."
+    return (
+        f"Outputs are truncated to their last {truncate_len} characters.\n\n"
+        f"code:\n```python\n{code}```\n\n"
+        f"Output:\n{output}\n\n"
+        f"Task: {task}"
+    )
