@@ -14,6 +14,8 @@ _ROOT = str(Path(__file__).resolve().parents[1])
 
 
 class WasmRuntime(ProtocolRuntime):
+    #: Whether the cell runs without syscalls.
+    SEALED = True
     #: Its own process, so a tool has to be rebuilt from text.
     NEEDS_SOURCE = True
 

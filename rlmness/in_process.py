@@ -45,6 +45,8 @@ def _awaitable(function: Callable) -> Callable:
 
 
 class InProcessRuntime:
+    #: Shares this interpreter, so it reaches whatever this process can.
+    SEALED = False
     #: Tools arrive as objects, so nothing has to be rebuilt from text.
     NEEDS_SOURCE = False
 
