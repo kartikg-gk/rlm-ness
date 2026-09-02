@@ -137,6 +137,8 @@ class ProtocolRuntime:
 
 
 class SubprocessRuntime(ProtocolRuntime):
+    #: Whether the cell runs without syscalls.
+    SEALED = False
     #: Its own process, so a tool has to be rebuilt from text.
     NEEDS_SOURCE = True
 

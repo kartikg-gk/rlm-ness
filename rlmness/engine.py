@@ -222,7 +222,14 @@ def solve(
     if config.enable_delegation:
         bridges.update({"rlm": _rlm, "gather_rlm": _gather_rlm})
     messages = [
-        {"role": "system", "content": system_prompt(can_recurse, prepared)},
+        {
+            "role": "system",
+            "content": system_prompt(
+                can_recurse,
+                prepared,
+                sealed=getattr(runtime_factory, "SEALED", False),
+            ),
+        },
         {"role": "user", "content": opening_message(prompt, instruction)},
     ]
     total = Spend()

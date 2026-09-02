@@ -78,6 +78,14 @@ That is what they are for, and it is almost always the shorter path from there.\
 """
 
 
+_SEALED = """
+Your code runs inside WebAssembly. There is no filesystem and no network: an
+import that needs either will fail, and so will anything a tool tries to fetch
+or read. The package set is smaller than a normal Python install. Work from
+PROMPT and what you have been given rather than reaching for anything outside.
+"""
+
+
 def _tool_section(tools) -> str:
     """List the tools by name, signature and description.
 
@@ -104,12 +112,16 @@ def _tool_section(tools) -> str:
     return "\n".join(lines) + "\n"
 
 
-def system_prompt(can_recurse: bool = False, tools=()) -> str:
+def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False) -> str:
     """Describe only what the caller can actually reach.
 
     `llm` and `gather_llm` are flat calls and work at any depth, so a leaf
     agent gets them too. Advertising `rlm` to an agent that can only get an
     error from it wastes a turn.
+
+    `sealed` says the runtime has no syscalls. Without it the model finds out
+    by writing a fetch and reading the failure, which costs a turn to learn
+    something the runtime knew all along.
     """
     parts = [_BASE, _FLAT]
     if can_recurse:
@@ -118,6 +130,8 @@ def system_prompt(can_recurse: bool = False, tools=()) -> str:
     else:
         parts.append(_BATCHING.format(one="llm", many="gather_llm"))
     parts.append(_GUIDANCE)
+    if sealed:
+        parts.append(_SEALED)
     parts.append(_tool_section(tools))
     return "".join(parts)
 
