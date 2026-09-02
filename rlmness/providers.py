@@ -41,6 +41,49 @@ class Spend:
     # None means the provider did not say, which is not the same as free.
     # Collapsing the two is what makes a spend limit quietly stop working.
     cost: float | None = None
+    # Two more the provider may or may not break out. None means it did not,
+    # for the same reason cost distinguishes silence from zero: a reader has
+    # to be able to tell "no cache was hit" from "nobody counted".
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+def _sum_or_none(left, right):
+    """Unknown on both sides stays unknown; known on either side is a total.
+
+    A count nobody reported must not read as a measured zero — that is what
+    turns a silent provider into a confident-looking nothing.
+    """
+    if left is None and right is None:
+        return None
+    return (left or 0) + (right or 0)
+
+
+def combine(left: Spend, right: Spend) -> Spend:
+    """Add two spends, keeping "nobody said" distinct from "zero"."""
+    return Spend(
+        prompt_tokens=left.prompt_tokens + right.prompt_tokens,
+        completion_tokens=left.completion_tokens + right.completion_tokens,
+        total_tokens=left.total_tokens + right.total_tokens,
+        cost=_sum_or_none(left.cost, right.cost),
+        cached_tokens=_sum_or_none(left.cached_tokens, right.cached_tokens),
+        reasoning_tokens=_sum_or_none(left.reasoning_tokens, right.reasoning_tokens),
+    )
+
+
+def _detail(usage: dict, section: str, field: str) -> int | None:
+    """Read a token count a provider may not break out at all.
+
+    Two shapes are in the wild: nested under a details object, or flat
+    alongside the totals. Absent in both is reported as absent rather than as
+    zero, which would claim a measurement nobody made.
+    """
+    nested = usage.get(section)
+    if isinstance(nested, dict) and nested.get(field) is not None:
+        return int(nested[field])
+    if usage.get(field) is not None:
+        return int(usage[field])
+    return None
 
 
 class ModelClient(Protocol):
@@ -106,6 +149,10 @@ class ChatClient:
             completion_tokens=int(raw.get("completion_tokens", 0) or 0),
             total_tokens=int(raw.get("total_tokens", 0) or 0),
             cost=float(reported) if reported is not None else None,
+            cached_tokens=_detail(raw, "prompt_tokens_details", "cached_tokens"),
+            reasoning_tokens=_detail(
+                raw, "completion_tokens_details", "reasoning_tokens"
+            ),
         )
         text = payload["choices"][0]["message"].get("content") or ""
         return text, usage
