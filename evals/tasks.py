@@ -104,6 +104,78 @@ SANITY_TASKS = [_hedge_task(8, 5), _hedge_task(16, 11), _counting_task()]
 
 
 # --------------------------------------------------------------------------
+# Synthetic long-context tier — generated, but not searchable
+# --------------------------------------------------------------------------
+
+_SPEAKERS = [
+    "Ada", "Boris", "Chen", "Dara", "Emil", "Farah",
+    "Goro", "Hilde", "Ivo", "Juno", "Kemi", "Lars",
+]
+
+_MOVES = [
+    "{who} moved {n} units of grain to the {place} store.",
+    "{who} took {n} units of grain out of the {place} store.",
+    "{who} counted the {place} store and wrote down {n}.",
+    "{who} said nothing about the {place} store this week.",
+]
+
+_PLACES = ["north", "south", "river", "hill"]
+
+
+def _ledger(weeks: int, seed: int = 7) -> tuple[str, int]:
+    """A running total no substring can reveal.
+
+    Every line is quantitative and every line matters, so the answer is a
+    property of the whole document rather than of one passage in it. That is
+    the shape a retrieval question never has: there is no distinctive token to
+    search for, because the number being asked about is never written down.
+    """
+    state = seed
+    held = 0
+    lines = []
+    for week in range(weeks):
+        for slot in range(4):
+            state = (state * 1103515245 + 12345) % 2147483648
+            who = _SPEAKERS[state % len(_SPEAKERS)]
+            place = _PLACES[(state // 7) % len(_PLACES)]
+            count = (state // 13) % 40 + 1
+            template = _MOVES[(state // 11) % len(_MOVES)]
+            if template is _MOVES[0]:
+                held += count
+            elif template is _MOVES[1]:
+                held -= count
+            lines.append(
+                f"Week {week}, entry {slot}: "
+                + template.format(who=who, n=count, place=place)
+            )
+    return "\n".join(lines), held
+
+
+def _ledger_task(weeks: int) -> Task:
+    text, held = _ledger(weeks)
+    return Task(
+        name=f"ledger-{weeks}w",
+        tier=SANITY,
+        prompt=text,
+        instruction=(
+            "PROMPT is a grain ledger. Some entries move grain into a store, "
+            "some take it out, and some only report or say nothing. Starting "
+            "from zero, work out the net amount held once every entry has been "
+            "applied in order. Return the number and nothing else."
+        ),
+        score=lambda answer, expected=held: float(numeric_match(answer, expected)),
+    )
+
+
+# Long enough that the whole document cannot be read in one window, and
+# arithmetic rather than lookup, so a sub-agent given a slice can do real work
+# that the parent then adds up. Kept in the sanity tier deliberately: the text
+# is generated, so a result here is evidence the mechanism runs, never evidence
+# about quality.
+LONG_SYNTHETIC_TASKS = [_ledger_task(40), _ledger_task(160)]
+
+
+# --------------------------------------------------------------------------
 # Benchmark tier — published data, fetched once, standard library only
 # --------------------------------------------------------------------------
 
@@ -210,6 +282,8 @@ def load_longbench(config: str = "hotpotqa", limit: int = 3) -> list[Task]:
 def resolve(name: str, limit: int) -> list[Task]:
     if name == SANITY:
         return SANITY_TASKS
+    if name == "ledger":
+        return LONG_SYNTHETIC_TASKS[:limit] if limit else LONG_SYNTHETIC_TASKS
     if name.startswith("longbench"):
         _, _, config = name.partition(":")
         return load_longbench(config or "hotpotqa", limit)
