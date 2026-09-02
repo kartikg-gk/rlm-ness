@@ -19,6 +19,7 @@ from .wasm_runtime import WasmRuntime
 from .tools import describe
 from .in_process import InProcessRuntime
 from .runtime import SubprocessRuntime
+from .events import emit
 
 RUNTIMES = {
     "subprocess": SubprocessRuntime,
@@ -231,13 +232,43 @@ def solve(
         {"role": "user", "content": opening_message(prompt, instruction)},
     ]
     total = Spend()
+    text_prompt = str(prompt)
+    emit(
+        trace,
+        "run_started",
+        run_id=run_id,
+        parent_run_id=parent_run_id,
+        depth=depth,
+        model=model,
+        instruction=instruction,
+        prompt_type=type(prompt).__name__,
+        prompt_size=len(text_prompt),
+    )
     runtime = runtime_factory(prompt, bridges, config.timeout, prepared)
+
+    def _snapshot(step: int) -> None:
+        """Ask the runtime what is bound, and only if someone is watching.
+
+        A snapshot costs a round trip to the sandbox. Nothing about the run
+        depends on it, so it is skipped entirely when no sink wants it.
+        """
+        if not hasattr(trace, "namespace_changed"):
+            return
+        reader = getattr(runtime, "snapshot", None)
+        if reader is None:
+            return
+        try:
+            variables = reader()
+        except Exception:
+            return
+        emit(trace, "namespace_changed", run_id=run_id, step=step, variables=variables)
 
     try:
         for step in range(1, config.max_steps + 1):
             _abort_if_cancelled()
             allowance.reserve()
             llm_call_start = _now()
+            emit(trace, "step_started", run_id=run_id, step=step, started=llm_call_start)
             text, usage = backend.complete(messages, model=model)
             llm_call_end = _now()
             allowance.settle(usage)
@@ -252,40 +283,84 @@ def solve(
 
             code = first_runnable_block(text)
             if code is None:
+                emit(trace, "code_generated", run_id=run_id, step=step, code=None)
+                emit(
+                    trace, "output_received",
+                    run_id=run_id, step=step, output=NO_CODE, error=True,
+                )
                 _log(trace, depth, run_id, parent_run_id, step, None, NO_CODE, True, usage, timestamps)
+                emit(
+                    trace, "step_completed",
+                    run_id=run_id, step=step, usage=usage, error=True, ended=_now(),
+                )
                 messages.append({"role": "user", "content": banner + NO_CODE})
                 continue
 
+            emit(trace, "code_generated", run_id=run_id, step=step, code=code)
             timestamps["execution_start"] = _now()
             cell = runtime.execute(code)
             timestamps["execution_end"] = _now()
             output = cell.stdout + (f"\n{cell.error}" if cell.error else "")
 
             if cell.has_final:
+                emit(
+                    trace, "output_received",
+                    run_id=run_id, step=step, output=output, error=False,
+                )
                 _log(trace, depth, run_id, parent_run_id, step, code, output, False, usage, timestamps)
-                if trace:
-                    trace.final(cell.final, depth=depth, run_id=run_id, parent_run_id=parent_run_id)
+                emit(
+                    trace, "step_completed",
+                    run_id=run_id, step=step, usage=usage, error=False, ended=_now(),
+                )
+                _snapshot(step)
+                emit(
+                    trace, "final",
+                    result=cell.final, depth=depth,
+                    run_id=run_id, parent_run_id=parent_run_id,
+                )
+                emit(trace, "run_completed", run_id=run_id, result=cell.final)
                 return Answer(output=cell.final, steps=step, usage=total)
 
             labelled = label_output(output, config.truncate_len)
+            emit(
+                trace, "output_received",
+                run_id=run_id, step=step, output=labelled, error=bool(cell.error),
+            )
             _log(trace, depth, run_id, parent_run_id, step, code, labelled, bool(cell.error), usage, timestamps)
+            emit(
+                trace, "step_completed",
+                run_id=run_id, step=step, usage=usage, error=bool(cell.error), ended=_now(),
+            )
+            _snapshot(step)
             messages.append({"role": "user", "content": f"{banner}Output:\n{labelled}"})
 
         raise StepsUsedUp(f"no FINAL() after {config.max_steps} steps")
+    except BaseException as failure:
+        emit(
+            trace, "run_failed",
+            run_id=run_id, error=f"{type(failure).__name__}: {failure}",
+        )
+        raise
     finally:
         runtime.close()
 
 
 def _log(trace, depth, run_id, parent_run_id, step, code, output, error, usage, timestamps) -> None:
-    if trace:
-        trace.step(
-            step=step,
-            code=code,
-            output=output,
-            error=error,
-            usage=usage,
-            depth=depth,
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            timestamps=timestamps,
-        )
+    """Write the after-the-fact record, for a sink that keeps one.
+
+    Routed through `emit` like every other event, so a sink that only wants
+    the live picture is not obliged to pretend it is a journal.
+    """
+    emit(
+        trace,
+        "step",
+        step=step,
+        code=code,
+        output=output,
+        error=error,
+        usage=usage,
+        depth=depth,
+        run_id=run_id,
+        parent_run_id=parent_run_id,
+        timestamps=timestamps,
+    )
