@@ -5,10 +5,11 @@ from __future__ import annotations
 import ast
 import re
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from .providers import ModelClient, Spend, combine
@@ -100,8 +101,34 @@ def label_output(text: str, limit: int) -> str:
     return f"[FULL OUTPUT SHOWN]... {text}"
 
 
+class _Clock:
+    """Wall-clock readings that can still tell short things apart.
+
+    The system clock ticks about once every sixteen milliseconds on some
+    platforms, so two readings taken either side of a fast cell come back
+    identical and its duration reads as exactly zero — which is the one thing
+    these timestamps exist to measure. The performance counter resolves
+    fractions of a microsecond but says nothing about the date.
+
+    So the date is read once and the counter supplies every offset from it.
+    The result is a real timestamp that is also honest about small gaps, and
+    it cannot be dragged backwards by a clock correction mid-run.
+    """
+
+    def __init__(self):
+        self._wall = datetime.now(timezone.utc)
+        self._mark = time.perf_counter()
+
+    def now(self) -> str:
+        elapsed = time.perf_counter() - self._mark
+        return (self._wall + timedelta(seconds=elapsed)).isoformat()
+
+
+_CLOCK = _Clock()
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _CLOCK.now()
 
 
 _add = combine
