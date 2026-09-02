@@ -15,7 +15,7 @@ from typing import Any, Callable, Mapping
 from .providers import ModelClient, Spend, combine
 from .limits import Allowance, Abandoned
 from .config import Config, load_config
-from .briefing import opening_message, system_prompt
+from .briefing import PREVIEW, opening_message, shows_everything, system_prompt
 from .wasm_runtime import WasmRuntime
 from .tools import describe
 from .in_process import InProcessRuntime
@@ -40,6 +40,47 @@ TOO_DEEP = (
     "maximum recursion depth reached: rlm() is not available here. "
     "Solve this task yourself, slicing PROMPT in the namespace."
 )
+
+UNSEEN = (
+    "Nothing ran. That block answers without reading PROMPT, and you have only "
+    "been shown its first and last {preview} characters — the answer would be "
+    "based on a sample rather than on the data.\n"
+    "Look at PROMPT in the namespace first. If the answer genuinely does not "
+    "depend on what is in it, print your reasoning this turn and call FINAL on "
+    "the next one."
+)
+
+
+def answers_without_looking(code: str) -> bool:
+    """Whether a cell ends the run without ever reading PROMPT.
+
+    A model handed a self-contained-sounding question will sometimes answer it
+    from the opening message and use FINAL to deliver the text, never touching
+    the data it was given. That is the one mistake this loop cannot recover
+    from: every other wrong turn leaves another step to correct it, and this
+    one ends the run.
+
+    Reading the name at all counts as looking. `FINAL(PROMPT.count("r"))` is a
+    complete and correct answer in one cell, and refusing it would cost a turn
+    to learn nothing.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        # Unparseable code is the extractor's problem; the model needs to see
+        # the SyntaxError rather than a lecture about PROMPT.
+        return False
+    finals = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "FINAL"
+        for node in ast.walk(tree)
+    )
+    if not finals:
+        return False
+    return not any(
+        isinstance(node, ast.Name) and node.id == "PROMPT" for node in ast.walk(tree)
+    )
 
 
 class StepsUsedUp(Exception):
@@ -324,6 +365,30 @@ def solve(
                 continue
 
             emit(trace, "code_generated", run_id=run_id, step=step, code=code)
+
+            # Only the first step, and only when the opening message showed a
+            # sample rather than the whole value. After one step the model has
+            # read something back, and a short prompt it was handed in full is
+            # data it has genuinely seen.
+            if (
+                config.enable_first_look_guard
+                and step == 1
+                and not shows_everything(prompt)
+                and answers_without_looking(code)
+            ):
+                notice = UNSEEN.format(preview=PREVIEW)
+                emit(
+                    trace, "output_received",
+                    run_id=run_id, step=step, output=notice, error=True,
+                )
+                _log(trace, depth, run_id, parent_run_id, step, code, notice, True, usage, timestamps)
+                emit(
+                    trace, "step_completed",
+                    run_id=run_id, step=step, usage=usage, error=True, ended=_now(),
+                )
+                messages.append({"role": "user", "content": banner + notice})
+                continue
+
             timestamps["execution_start"] = _now()
             cell = runtime.execute(code)
             timestamps["execution_end"] = _now()

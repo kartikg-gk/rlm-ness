@@ -140,12 +140,22 @@ def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False) -> 
     return "".join(parts)
 
 
+def shows_everything(prompt) -> bool:
+    """Whether the opening message carried the whole value, not a sample.
+
+    Anything that reasons about what the model has actually been shown has to
+    ask here rather than re-deriving the rule, or the two answers drift and
+    the model gets told it has not seen something it was handed in full.
+    """
+    return len(str(prompt)) <= 2 * PREVIEW
+
+
 def opening_message(prompt, instruction: str | None = None) -> str:
     text = str(prompt)
     lines = [
         f"PROMPT is bound in the namespace. type={type(prompt).__name__} length={len(text)}",
     ]
-    if len(text) > 2 * PREVIEW:
+    if not shows_everything(prompt):
         lines.append(f"first {PREVIEW} chars:\n{text[:PREVIEW]}")
         lines.append(f"last {PREVIEW} chars:\n{text[-PREVIEW:]}")
     else:
