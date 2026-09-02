@@ -129,6 +129,12 @@ def main():
 
     namespace["FINAL"] = FINAL
     _install_tools(init.get("tools", []), namespace)
+
+    # Kept out of the cell's namespace: the model must not see a name it did
+    # not bind, and the summary is the host's question, not the model's tool.
+    summariser = {}
+    if init.get("summariser"):
+        exec(init["summariser"], summariser)
     _write({"op": "ready"})
 
     while True:
@@ -136,6 +142,14 @@ def main():
         operation = command.get("op")
         if operation == "shutdown":
             return
+        if operation == "snapshot":
+            describe = summariser.get("summarise")
+            try:
+                variables = describe(namespace) if describe else []
+            except Exception:
+                variables = []
+            _write({"op": "namespace", "variables": variables})
+            continue
         if operation != "exec":
             continue
         _write(_exec_cell(command.get("code", ""), namespace))

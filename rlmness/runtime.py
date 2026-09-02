@@ -14,6 +14,11 @@ from typing import Any, Callable, Mapping, Sequence
 
 _RUNNER = str(Path(__file__).with_name("cell_runner.py"))
 
+# Read once. The summary of a namespace is built where the namespace is, so
+# the code that builds it has to travel there — the same one-way trip a tool
+# makes, and for the same reason: nothing comes back but plain data.
+SUMMARISER = Path(__file__).with_name("namespace.py").read_text(encoding="utf-8")
+
 
 class CellTimeout(Exception):
     pass
@@ -50,6 +55,7 @@ class ProtocolRuntime:
                 "tools": [
                     {"name": tool.name, "source": tool.source} for tool in tools
                 ],
+                "summariser": SUMMARISER,
             }
         )
         ready = self._receive()
@@ -121,6 +127,27 @@ class ProtocolRuntime:
                 )
             if operation == "bridge":
                 self._serve_bridge(message)
+
+    def snapshot(self) -> list[dict]:
+        """What is bound in the cell's namespace, as plain data.
+
+        A read-only question asked of the runtime, answered on the same wire
+        the protocol already uses. It carries no objects, so a runtime stays
+        exactly as reachable as it was — this is not a bridge.
+        """
+        if self._closed:
+            return []
+        try:
+            self._write({"op": "snapshot"})
+            while True:
+                message = self._receive()
+                if message.get("op") == "namespace":
+                    return message.get("variables", [])
+                if message.get("op") == "bridge":
+                    self._serve_bridge(message)
+        except (RuntimeGone, CellTimeout):
+            # A snapshot is for looking at a run, never part of running one.
+            return []
 
     def close(self):
         if self._closed:

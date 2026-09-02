@@ -21,6 +21,7 @@ import traceback
 from contextlib import redirect_stdout
 from typing import Any, Callable, Mapping
 
+from .namespace import summarise
 from .runtime import CellOutcome
 
 
@@ -100,6 +101,18 @@ class InProcessRuntime:
             has_final=has_final,
             error=error,
         )
+
+    def snapshot(self) -> list[dict]:
+        """The same summary the other runtimes build, over the same names.
+
+        There is no boundary to cross here, so the summariser is imported
+        rather than shipped. It is still the summariser that runs, so one
+        variable reads identically whichever runtime is underneath.
+        """
+        try:
+            return summarise(self.namespace)
+        except Exception:
+            return []
 
     def close(self):
         self._closed = True

@@ -60,6 +60,25 @@ def _checked(name, function):
     tool.__wrapped__ = function
     return tool
 
+# Underscored, so the model never sees it listed and never sees the name at
+# all in a namespace it did not build.
+_summariser = {}
+
+def _install_summariser(source):
+    if source:
+        exec(source, _summariser)
+
+def _snapshot():
+    describe = _summariser.get("summarise")
+    if not describe:
+        return json.dumps([])
+    try:
+        # globals() is the cell's namespace here, so this is the real thing
+        # and not a copy kept alongside it.
+        return json.dumps(describe(globals()), default=str)
+    except Exception:
+        return json.dumps([])
+
 async def _exec_cell(src):
     buf = io.StringIO()
     final, has_final, error = None, False, None
@@ -123,7 +142,14 @@ async function main() {
       // ordinary Python call that never reaches back out here.
       py.globals.set("_TOOLS_JSON", JSON.stringify(msg.tools ?? []));
       await py.runPythonAsync("_install_tools(_TOOLS_JSON)\n");
+      py.globals.set("_SUMMARISER_SRC", msg.summariser ?? "");
+      await py.runPythonAsync("_install_summariser(_SUMMARISER_SRC)\n");
       send({ op: "ready" });
+      return;
+    }
+    if (msg.op === "snapshot") {
+      const variablesJson = await py.runPythonAsync("_snapshot()");
+      send({ op: "namespace", variables: JSON.parse(variablesJson) });
       return;
     }
     if (msg.op === "exec") {
