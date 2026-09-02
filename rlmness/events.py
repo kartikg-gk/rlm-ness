@@ -123,6 +123,20 @@ class RunTree:
     def _touch(self):
         self._version += 1
 
+    def reset(self) -> None:
+        """Forget the previous run, keeping the version counter moving.
+
+        The counter is not reset with the rest: a viewer decides whether to
+        redraw by comparing against the last version it drew, so restarting
+        the count at zero would read as "nothing has changed".
+        """
+        with self._lock:
+            self.agents.clear()
+            self.root_id = None
+            self.query = ""
+            self.status = RUNNING
+            self._touch()
+
     # -- sink methods: the engine calls these ------------------------------
 
     def run_started(self, *, run_id, parent_run_id, depth, model, instruction,
