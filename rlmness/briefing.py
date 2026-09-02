@@ -79,10 +79,14 @@ That is what they are for, and it is almost always the shorter path from there.\
 
 
 _SEALED = """
-Your code runs inside WebAssembly. There is no filesystem and no network: an
-import that needs either will fail, and so will anything a tool tries to fetch
-or read. The package set is smaller than a normal Python install. Work from
-PROMPT and what you have been given rather than reaching for anything outside.
+Your code runs inside WebAssembly. There is no network and no host filesystem.
+A module that reaches for either still imports — it fails when you call it —
+and a tool you have been given is bound by this too, so work from PROMPT and
+what is already here rather than fetching or reading.
+
+Third-party packages are not installed: no pandas, no numpy, no requests. The
+Python standard library is, so parse with it: `csv` for CSV or TSV,
+`xml.etree.ElementTree` for XML, `tomllib` for TOML, `json` for JSON.
 """
 
 
