@@ -9,6 +9,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# The dashboard is a viewer over the run, never part of running one.
+tui = ["textual>=0.80"]
 # Reserved for benchmark sets that ship no plain archive.
 evals = ["datasets>=2.14"]
 
