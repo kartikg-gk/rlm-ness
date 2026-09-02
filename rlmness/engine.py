@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
-from .providers import ModelClient, Spend
+from .providers import ModelClient, Spend, combine
 from .limits import Allowance, Abandoned
 from .config import Config, load_config
 from .briefing import opening_message, system_prompt
@@ -103,19 +103,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _add(left: Spend, right: Spend) -> Spend:
-    # An unknown cost on either side leaves the sum unknown rather than
-    # silently reading as free.
-    if left.cost is None and right.cost is None:
-        cost = None
-    else:
-        cost = (left.cost or 0.0) + (right.cost or 0.0)
-    return Spend(
-        prompt_tokens=left.prompt_tokens + right.prompt_tokens,
-        completion_tokens=left.completion_tokens + right.completion_tokens,
-        total_tokens=left.total_tokens + right.total_tokens,
-        cost=cost,
-    )
+_add = combine
 
 
 def solve(
