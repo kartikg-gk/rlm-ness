@@ -17,7 +17,7 @@ from typing import Any
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import DataTable, Footer, Static, Tree
+from textual.widgets import DataTable, Footer, Input, Static, Tree
 
 from .events import DONE, FAILED, RUNNING, RunTree
 
@@ -57,6 +57,8 @@ class Dashboard(App):
         content-align: left middle;
     }
 
+    #ask { border: round $accent; height: 3; }
+
     #body { height: 1fr; layout: horizontal; }
 
     /* Narrow left column: the tree above, the namespace below. */
@@ -83,10 +85,24 @@ class Dashboard(App):
         ("ctrl+c", "quit", "Quit"),
     ]
 
-    def __init__(self, tree: RunTree, runner=None, title: str = "rlm-ness"):
+    def __init__(
+        self,
+        tree: RunTree,
+        runner=None,
+        title: str = "rlm-ness",
+        *,
+        ask=None,
+    ):
+        """`runner` runs a query already chosen; `ask` runs one typed here.
+
+        Both are callables the caller supplies, because the dashboard must not
+        know how to build a backend or read a config. Given `ask`, the query
+        box appears and the run starts when it is submitted.
+        """
         super().__init__()
         self.state = tree
         self.runner = runner
+        self.ask = ask
         self._title = title
         self.selected: tuple[str, int | None] | None = None
         self.following = True
@@ -102,6 +118,8 @@ class Dashboard(App):
 
     def compose(self) -> ComposeResult:
         yield Static(id="query")
+        if self.ask is not None:
+            yield Input(placeholder="ask something, then press enter", id="ask")
         with Horizontal(id="body"):
             with Vertical(id="left"):
                 yield Tree("run", id="tree")
@@ -125,6 +143,8 @@ class Dashboard(App):
         # is on screen immediately rather than after the first tick.
         self.refresh_view()
         self.set_interval(TICK, self._tick)
+        if self.ask is not None:
+            self.query_one("#ask", Input).focus()
         if self.runner is not None:
             self._start(self.runner)
 
@@ -141,6 +161,32 @@ class Dashboard(App):
                 self.running = False
 
         threading.Thread(target=body, daemon=True).start()
+
+    def on_input_submitted(self, event) -> None:
+        """Start a run from the query box, or refuse while one is in flight.
+
+        Two runs would write into one tree and the view could not tell them
+        apart, so a second query waits until the first has finished.
+        """
+        text = event.value.strip()
+        if not text or self.running:
+            return
+        self._reset()
+        self.state.query = text
+        self.query_one("#ask", Input).value = ""
+        self._start(lambda: self.ask(text))
+
+    def _reset(self) -> None:
+        """Clear the previous run so a second query starts from nothing."""
+        self.state.reset()
+        self.query_one("#tree", Tree).clear()
+        self._agent_nodes.clear()
+        self._step_nodes.clear()
+        self.selected = None
+        self.following = True
+        self.result = None
+        self.failure = None
+        self._drawn_version = -1
 
     # -- drawing ----------------------------------------------------------
 
@@ -173,6 +219,13 @@ class Dashboard(App):
 
     def _draw_query(self) -> None:
         status = self.state.status
+        if self.state.root_id is None and not self.running:
+            # Nothing has been asked yet. A spinner here would claim work that
+            # is not happening.
+            self.query_one("#query", Static).update(
+                f"[b]{self._title}[/b]  [dim]waiting for a question[/dim]"
+            )
+            return
         if status == RUNNING:
             mark = SPINNER[self._frame % len(SPINNER)]
             colour, word = "yellow", "running"
@@ -331,8 +384,8 @@ class Dashboard(App):
         self._drawn_version = -1
 
 
-def show(tree: RunTree, runner=None, title: str = "rlm-ness") -> Dashboard:
+def show(tree: RunTree, runner=None, title: str = "rlm-ness", *, ask=None) -> Dashboard:
     """Run the dashboard until the operator quits, and hand it back."""
-    app = Dashboard(tree, runner=runner, title=title)
+    app = Dashboard(tree, runner=runner, title=title, ask=ask)
     app.run()
     return app

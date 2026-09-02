@@ -45,7 +45,13 @@ def _parse(argv):
 
 def main(argv=None, *, backend=None) -> int:
     args = _parse(argv if argv is not None else sys.argv[1:])
-    query = args.query if args.query is not None else sys.stdin.read()
+
+    # No query and a terminal to draw on: open the dashboard and let the
+    # question be typed there. Piped input still means "read it and answer",
+    # so `cat file | rlmness` keeps working headless.
+    interactive = args.query is None and sys.stdin.isatty()
+    query = args.query if args.query is not None else ("" if interactive else sys.stdin.read())
+    wants_dashboard = args.dashboard or interactive
 
     try:
         config = load_config(
@@ -72,7 +78,8 @@ def main(argv=None, *, backend=None) -> int:
 
     trace = Journal()
     sink = trace
-    if args.dashboard:
+    live = None
+    if wants_dashboard:
         try:
             from .dashboard import show
             from .events import Broadcast, RunTree
@@ -98,7 +105,18 @@ def main(argv=None, *, backend=None) -> int:
         )
 
     try:
-        if args.dashboard:
+        if interactive:
+            # A fresh journal per question: one file holding two unrelated
+            # runs would make the trace unreadable and the timeline wrong.
+            def ask(text: str) -> Answer:
+                nonlocal trace, sink
+                trace = Journal()
+                sink = Broadcast(trace, live)
+                return run(text)
+
+            show(live, ask=ask, title=config.primary_agent)
+            return 0
+        if wants_dashboard:
             app = show(live, runner=lambda: run(query), title=config.primary_agent)
             if app.failure is not None:
                 raise app.failure
