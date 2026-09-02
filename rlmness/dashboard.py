@@ -17,6 +17,9 @@ from typing import Any
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from rich.syntax import Syntax
+from rich.text import Text
+
 from textual.widgets import DataTable, Footer, Input, Static, Tree
 
 from .events import DONE, FAILED, RUNNING, RunTree
@@ -29,6 +32,10 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 TICK = 0.1
 
 MARKS = {RUNNING: "·", DONE: "✓", FAILED: "✗"}
+
+# A step is a box: filled while running, ticked when done, crossed when it
+# failed. Reads down the column at a glance the way a checklist does.
+BOXES = {RUNNING: "[●]", DONE: "[✓]", FAILED: "[✗]"}
 
 
 def _cell(value, unknown: str = "—") -> str:
@@ -47,36 +54,69 @@ def _clip(text: str, width: int) -> str:
 class Dashboard(App):
     """The whole screen. One `RunTree`, four panes over it."""
 
+    # Thin borders with the panel name set into the top rule, and a palette
+    # held well back: the code and the output are the only things on screen
+    # worth looking at directly, so nothing else competes for attention.
     CSS = """
-    Screen { layout: vertical; }
+    Screen { layout: vertical; background: #0d1117; color: #c9d1d9; }
 
     #query {
         height: 3;
-        border: round $accent;
+        border: solid #21262d;
+        border-title-color: #58a6ff;
         padding: 0 1;
         content-align: left middle;
     }
 
-    #ask { border: round $accent; height: 3; }
+    #ask {
+        border: solid #21262d;
+        border-title-color: #58a6ff;
+        background: #0d1117;
+        height: 3;
+    }
+    #ask:focus { border: solid #388bfd; }
 
     #body { height: 1fr; layout: horizontal; }
 
     /* Narrow left column: the tree above, the namespace below. */
     #left { width: 34; layout: vertical; }
-    #tree { height: 1fr; border: round $primary; padding: 0 1; }
-    #namespace { height: 1fr; border: round $primary; padding: 0 1; }
+    #tree, #namespace {
+        border: solid #21262d;
+        border-title-color: #7d8590;
+        background: #0d1117;
+        padding: 0 1;
+        height: 1fr;
+    }
+    Tree { background: #0d1117; }
+    Tree > .tree--cursor { background: #1f6feb; color: #ffffff; }
+    Tree > .tree--guides { color: #21262d; }
+    Tree > .tree--guides-selected { color: #30363d; }
 
     #right { width: 1fr; layout: vertical; }
 
     /* Compact by construction: a fixed height, so it cannot grow into the
        space the code and output need. */
-    #info { height: 7; border: round $secondary; padding: 0 1; }
+    #info {
+        height: 7;
+        border: solid #21262d;
+        border-title-color: #7d8590;
+        padding: 0 1;
+    }
 
     #panes { height: 1fr; layout: horizontal; }
-    #code { width: 1fr; border: round $success; padding: 0 1; }
-    #output { width: 1fr; border: round $warning; padding: 0 1; }
+    #code, #output {
+        width: 1fr;
+        border: solid #21262d;
+        border-title-color: #7d8590;
+        background: #0d1117;
+        padding: 0 1;
+    }
 
-    DataTable { height: 1fr; }
+    DataTable { height: 1fr; background: #0d1117; }
+    DataTable > .datatable--header { color: #7d8590; background: #0d1117; }
+    DataTable > .datatable--cursor { background: #1f6feb; }
+
+    Footer { background: #161b22; color: #7d8590; }
     """
 
     BINDINGS = [
@@ -138,6 +178,14 @@ class Dashboard(App):
         table = self.query_one("#variables", DataTable)
         table.add_columns("name", "type", "size", "preview")
         table.cursor_type = "row"
+        self.query_one("#query").border_title = "QUERY"
+        if self.ask is not None:
+            self.query_one("#ask").border_title = "ASK"
+        self.query_one("#tree").border_title = "Runs"
+        self.query_one("#namespace").border_title = "REPL Namespace"
+        self.query_one("#info").border_title = "Info"
+        self.query_one("#code").border_title = "Code"
+        self.query_one("#output").border_title = "Output"
         self.query_one("#tree", Tree).root.expand()
         # Draw once before the clock starts, so a run already part-way through
         # is on screen immediately rather than after the first tick.
@@ -276,17 +324,27 @@ class Dashboard(App):
             if latest is not None and latest != self.selected:
                 self.selected = latest
 
-    def _agent_label(self, agent) -> str:
+    def _agent_label(self, agent):
         mark = MARKS.get(agent.status, " ")
-        name = "root" if agent.parent_run_id is None else f"agent {agent.run_id[:6]}"
-        return f"{mark} {name}  d{agent.depth}"
+        colour = {RUNNING: "yellow", DONE: "green", FAILED: "red"}.get(
+            agent.status, "#7d8590"
+        )
+        name = agent.run_id[:6] if agent.parent_run_id else "root"
+        return Text.assemble(
+            (f"{mark} ", colour), (name, "#58a6ff"), (f" (d{agent.depth})", "#7d8590")
+        )
 
-    def _step_label(self, state) -> str:
-        # No square brackets: a label is parsed as markup, so "[error]" would
-        # be read as a style tag and disappear instead of printing.
-        mark = MARKS.get(state.status, " ")
-        note = "  error" if state.error else ""
-        return f"{mark} step {state.step}{note}"
+    def _step_label(self, state):
+        # Built as a Text rather than a string: the box brackets would
+        # otherwise be parsed as markup and vanish.
+        box = BOXES.get(state.status, "[ ]")
+        colour = {RUNNING: "yellow", DONE: "#7d8590", FAILED: "red"}.get(
+            state.status, "#7d8590"
+        )
+        label = Text.assemble((box, colour), (f" Step {state.step}", "#c9d1d9"))
+        if state.error:
+            label.append("  error", "red")
+        return label
 
     def _latest(self) -> tuple[str, int] | None:
         """The newest step anywhere, so an idle viewer tracks the work."""
@@ -323,6 +381,7 @@ class Dashboard(App):
             return
         usage = state.usage if state is not None else agent.usage
         where = f"step {state.step}" if state is not None else "agent"
+        name = "root" if agent.parent_run_id is None else agent.run_id[:6]
         status = state.status if state is not None else agent.status
         if agent.status == DONE and agent.result is not None:
             outcome = f"[green]result[/] {_clip(repr(agent.result), 70)}"
@@ -350,8 +409,22 @@ class Dashboard(App):
             return
         # Code and output are read off one StepState, so a repaint can never
         # pair one agent's code with another agent's output.
-        code.update(state.code or "[dim]waiting for the model…[/dim]")
-        output.update(state.output or "[dim]—[/dim]")
+        if state.code:
+            code.update(
+                Syntax(
+                    state.code,
+                    "python",
+                    theme="github-dark",
+                    background_color="#0d1117",
+                    word_wrap=True,
+                )
+            )
+        else:
+            code.update("[dim]waiting for the model…[/dim]")
+        # Output is whatever the cell printed, so it is shown as written
+        # rather than guessed at — highlighting it as Python would colour
+        # ordinary text according to a grammar it does not follow.
+        output.update(Text(state.output) if state.output else "[dim]—[/dim]")
 
     def _draw_namespace(self) -> None:
         _, state = self._current()

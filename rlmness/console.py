@@ -7,7 +7,7 @@ import dataclasses
 import os
 import sys
 
-from .providers import PROVIDERS, make_client
+from .providers import PROVIDERS, MissingApiKey, make_client
 from .config import load_config
 from .engine import RUNTIMES, Answer, solve
 from .journal import Journal
@@ -72,6 +72,19 @@ def main(argv=None, *, backend=None) -> int:
             max_retries=config.api_max_retries,
             backoff=config.api_backoff,
         )
+    except MissingApiKey as error:
+        # Nothing can run without a key, so this is fatal either way. Say which
+        # provider is being asked for and how to point at a different one,
+        # since the usual cause is the configured default rather than a
+        # forgotten export.
+        print(f"{error}, or choose another provider.", file=sys.stderr)
+        print(
+            f"  configured provider: {config.provider}\n"
+            f"  others: {', '.join(sorted(set(PROVIDERS) - {config.provider}))}\n"
+            f"  e.g. rlmness --provider deepseek --model deepseek-v4-flash",
+            file=sys.stderr,
+        )
+        return 1
     except Exception as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         return 1
