@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import re
 import statistics
 import time
 
@@ -37,6 +38,8 @@ class Outcome:
     calls: int
     seconds: float
     delegated: bool
+    helped: bool = False
+    extra_calls: int = 0
     failure: str | None = None
 
 
@@ -59,14 +62,24 @@ class StepCounter:
         pass
 
 
-def _watching(backend, flag):
-    """Note whether a reply reached for a helper, without changing behaviour."""
+# Each helper matched on its own, with a boundary in front, so `gather_llm(`
+# is not also counted as `llm(`. The earlier version looked for the literal
+# "await rlm(" and for the two gathers, which missed a plain `llm(` entirely
+# and missed any spawn the model spelled with different spacing.
+SPAWNS = re.compile(r"(?<![\w.])(?:rlm|gather_rlm)\s*\(")
+HELPERS = re.compile(r"(?<![\w.])(?:rlm|llm|gather_rlm|gather_llm)\s*\(")
+
+
+def _watching(backend, flags):
+    """Note what a reply reached for, without changing behaviour."""
 
     class Watched:
         def complete(self, messages, *, model):
             text, usage = backend.complete(messages, model=model)
-            if any(mark in text for mark in ("gather_rlm", "gather_llm", "await rlm(")):
-                flag["seen"] = True
+            if SPAWNS.search(text):
+                flags["spawned"] = True
+            if HELPERS.search(text):
+                flags["helped"] = True
             return text, usage
 
     return Watched()
@@ -74,8 +87,8 @@ def _watching(backend, flag):
 
 def _once(task: Task, config: Config, provider: str) -> Outcome:
     allowance = Allowance.from_config(config)
-    flag = {"seen": False}
-    backend = _watching(make_client(provider), flag)
+    flags = {"spawned": False, "helped": False}
+    backend = _watching(make_client(provider), flags)
     counter = StepCounter()
 
     start = time.perf_counter()
@@ -93,13 +106,18 @@ def _once(task: Task, config: Config, provider: str) -> Outcome:
     except Exception as error:
         score, failure = 0.0, type(error).__name__
 
+    # A root agent spends one call per step. Anything above that was spent by
+    # a helper, whatever the reply happened to look like — arithmetic the
+    # pattern above cannot disagree with.
     return Outcome(
         score=score,
         solved=score >= task.threshold,
         steps=counter.steps,
         calls=allowance.calls,
         seconds=time.perf_counter() - start,
-        delegated=flag["seen"],
+        delegated=flags["spawned"],
+        helped=flags["helped"] or allowance.calls > counter.steps,
+        extra_calls=max(0, allowance.calls - counter.steps),
         failure=failure,
     )
 
@@ -111,6 +129,7 @@ def _row(label: str, outcomes: list[Outcome]) -> str:
         f"  {label:<4} solved {sum(o.solved for o in outcomes)}/{len(outcomes)}"
         f"  score {statistics.mean(o.score for o in outcomes):.2f}"
         f"  delegated {sum(o.delegated for o in outcomes)}/{len(outcomes)}"
+        f"  helped {sum(o.helped for o in outcomes)}/{len(outcomes)}"
         f"  steps {statistics.mean(steps):.1f}±{spread:.1f}"
         f"  calls {statistics.mean(o.calls for o in outcomes):.1f}"
         f"  {statistics.mean(o.seconds for o in outcomes):.1f}s"
