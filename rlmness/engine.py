@@ -317,6 +317,20 @@ def solve(
         prompt_type=type(prompt).__name__,
         prompt_size=len(text_prompt),
     )
+
+    # Asked before a sandbox is paid for. A child can be abandoned between
+    # being handed to the pool and starting, and starting one costs a process —
+    # under the sealed runtime a whole interpreter, seconds of it — and then an
+    # opening cell, all of it for an answer nobody is waiting for any more.
+    try:
+        _abort_if_cancelled()
+    except Abandoned as failure:
+        emit(
+            trace, "run_failed",
+            run_id=run_id, error=f"{type(failure).__name__}: {failure}",
+        )
+        raise
+
     runtime = runtime_factory(prompt, bridges, config.timeout, prepared)
 
     def _snapshot(step: int) -> None:
