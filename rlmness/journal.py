@@ -39,18 +39,39 @@ class Journal:
         error: bool,
         usage: Spend,
         depth: int = 0,
+        run_id: str | None = None,
+        parent_run_id: str | None = None,
+        timestamps: dict | None = None,
     ) -> None:
         self._write(
             {
                 "kind": "step",
                 "depth": depth,
+                "run_id": run_id,
+                "parent_run_id": parent_run_id,
                 "step": step,
                 "code": code,
                 "output": output,
                 "error": error,
                 "usage": asdict(usage),
+                "timestamps": timestamps or {},
             }
         )
 
-    def final(self, result, *, depth: int = 0) -> None:
-        self._write({"kind": "final", "depth": depth, "result": result})
+    def final(
+        self,
+        result,
+        *,
+        depth: int = 0,
+        run_id: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> None:
+        self._write(
+            {
+                "kind": "final",
+                "depth": depth,
+                "run_id": run_id,
+                "parent_run_id": parent_run_id,
+                "result": result,
+            }
+        )
