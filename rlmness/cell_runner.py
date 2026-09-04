@@ -46,14 +46,52 @@ def _make_proxy(name):
                 "_id": _next_id,
             }
         )
+        call = _next_id
         reply = _read()
-        while reply.get("op") != "bridge_result":
+        while reply.get("op") != "bridge_result" or reply.get("_id") != call:
             reply = _read()
         if not reply.get("ok"):
             raise RuntimeError(reply.get("error", f"{name}() failed on the host"))
         return reply.get("value")
 
     return proxy
+
+
+def _install_tools(specs, namespace):
+    """Define each tool here, so calling one never leaves this process.
+
+    The result is checked against what JSON can carry. Nothing forces that —
+    the value goes straight to code in this same namespace — but a tool that
+    hands back something only one runtime could produce would behave
+    differently depending on which is underneath, and that is worse than a
+    refusal the model can read.
+    """
+    for spec in specs:
+        name = spec["name"]
+        exec(spec["source"], namespace)
+        rebuilt = namespace[name]
+        # Only a function has a result to check; a data tool is just a value.
+        if callable(rebuilt):
+            namespace[name] = _checked(name, rebuilt)
+
+
+def _checked(name, function):
+    def tool(*args, **kwargs):
+        value = function(*args, **kwargs)
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            raise TypeError(
+                f"tool {name!r} returned {type(value).__name__}, which cannot be "
+                f"carried as JSON. Return plain data — a string, number, list, "
+                f"dict, bool or None."
+            ) from None
+        return value
+
+    tool.__name__ = getattr(function, "__name__", name)
+    tool.__doc__ = function.__doc__
+    tool.__wrapped__ = function
+    return tool
 
 
 def _exec_cell(code, namespace):
@@ -91,6 +129,13 @@ def main():
         raise _Answered(answer)
 
     namespace["FINAL"] = FINAL
+    _install_tools(init.get("tools", []), namespace)
+
+    # Kept out of the cell's namespace: the model must not see a name it did
+    # not bind, and the summary is the host's question, not the model's tool.
+    summariser = {}
+    if init.get("summariser"):
+        exec(init["summariser"], summariser)
     _write({"op": "ready"})
 
     while True:
@@ -98,6 +143,14 @@ def main():
         operation = command.get("op")
         if operation == "shutdown":
             return
+        if operation == "snapshot":
+            describe = summariser.get("summarise")
+            try:
+                variables = describe(namespace) if describe else []
+            except Exception:
+                variables = []
+            _write({"op": "namespace", "variables": variables})
+            continue
         if operation != "exec":
             continue
         _write(_exec_cell(command.get("code", ""), namespace))

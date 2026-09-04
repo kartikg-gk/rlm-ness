@@ -7,7 +7,7 @@ import dataclasses
 import os
 import sys
 
-from .providers import PROVIDERS, make_client
+from .providers import PROVIDERS, MissingApiKey, make_client
 from .config import load_config
 from .engine import RUNTIMES, Answer, solve
 from .journal import Journal
@@ -35,12 +35,23 @@ def _parse(argv):
         default=os.environ.get("RLMNESS_PROVIDER"),
         help="which API to call; each reads its own key from the environment",
     )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="watch the run in a terminal dashboard (needs the tui extra)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None, *, backend=None) -> int:
     args = _parse(argv if argv is not None else sys.argv[1:])
-    query = args.query if args.query is not None else sys.stdin.read()
+
+    # No query and a terminal to draw on: open the dashboard and let the
+    # question be typed there. Piped input still means "read it and answer",
+    # so `cat file | rlmness` keeps working headless.
+    interactive = args.query is None and sys.stdin.isatty()
+    query = args.query if args.query is not None else ("" if interactive else sys.stdin.read())
+    wants_dashboard = args.dashboard or interactive
 
     try:
         config = load_config(
@@ -60,20 +71,77 @@ def main(argv=None, *, backend=None) -> int:
             config.provider,
             max_retries=config.api_max_retries,
             backoff=config.api_backoff,
+            temperature=config.temperature,
+            reasoning_effort=config.reasoning_effort,
+            timeout=config.api_timeout,
         )
+    except MissingApiKey as error:
+        # Nothing can run without a key, so this is fatal either way. Say which
+        # provider is being asked for and how to point at a different one,
+        # since the usual cause is the configured default rather than a
+        # forgotten export.
+        print(f"{error}, or choose another provider.", file=sys.stderr)
+        print(
+            f"  configured provider: {config.provider}\n"
+            f"  others: {', '.join(sorted(set(PROVIDERS) - {config.provider}))}\n"
+            f"  e.g. rlmness --provider deepseek --model deepseek-v4-flash",
+            file=sys.stderr,
+        )
+        return 1
     except Exception as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
     trace = Journal()
-    try:
-        result = solve(
-            query,
+    sink = trace
+    live = None
+    if wants_dashboard:
+        try:
+            from .dashboard import show
+            from .events import Broadcast, RunTree
+        except ImportError:
+            print(
+                "the dashboard needs textual: pip install 'rlm-ness[tui]'",
+                file=sys.stderr,
+            )
+            return 1
+        live = RunTree()
+        live.query = query
+        # The journal is still written. The dashboard is an extra reader of
+        # the same events, never a replacement for the record.
+        sink = Broadcast(trace, live)
+
+    def run(text: str) -> Answer:
+        return solve(
+            text,
             backend,
             instruction=args.instruction,
             config=config,
-            trace=trace,
+            trace=sink,
         )
+
+    try:
+        if interactive:
+            # A fresh journal per question: one file holding two unrelated
+            # runs would make the trace unreadable and the timeline wrong.
+            def ask(text: str) -> Answer:
+                nonlocal trace, sink
+                trace = Journal()
+                sink = Broadcast(trace, live)
+                return run(text)
+
+            show(live, ask=ask, title=config.primary_agent)
+            return 0
+        if wants_dashboard:
+            app = show(live, runner=lambda: run(query), title=config.primary_agent)
+            if app.failure is not None:
+                raise app.failure
+            if app.result is None:
+                print(f"trace: {trace.path}")
+                return 0
+            result = app.result
+        else:
+            result = run(query)
     except Exception as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         print(f"trace: {trace.path}", file=sys.stderr)
