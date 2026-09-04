@@ -42,6 +42,10 @@ class ProcessChannel:
     def __init__(self, process):
         self.process = process
         self.inbox: queue.Queue = queue.Queue()
+        # A cell runs on one thread while close() may arrive on another,
+        # so a line has to go out whole rather than interleaved with a
+        # shutdown.
+        self._writing = threading.Lock()
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
@@ -50,11 +54,12 @@ class ProcessChannel:
         self.inbox.put(None)
 
     def send(self, message):
-        try:
-            self.process.stdin.write(json.dumps(message, default=str) + "\n")
-            self.process.stdin.flush()
-        except (BrokenPipeError, ValueError, OSError) as exc:
-            raise RuntimeGone("runtime is not accepting input") from exc
+        with self._writing:
+            try:
+                self.process.stdin.write(json.dumps(message, default=str) + "\n")
+                self.process.stdin.flush()
+            except (BrokenPipeError, ValueError, OSError) as exc:
+                raise RuntimeGone("runtime is not accepting input") from exc
 
     def kill(self):
         try:
@@ -158,6 +163,12 @@ class ProtocolRuntime:
                     error=message.get("error"),
                 )
             if operation == "bridge":
+                # Served inline, not on a thread. The guest waits for each
+                # reply before sending the next, so it can never have two
+                # calls outstanding and there is no concurrency here to win —
+                # only the hazard of replies arriving in an order the guest
+                # does not expect. Parallel helper work goes through the
+                # gather bridges, which cross in a single call.
                 self._serve_bridge(message)
 
     def snapshot(self) -> list[dict]:
