@@ -50,6 +50,8 @@ class InProcessRuntime:
     SEALED = False
     #: Tools arrive as objects, so nothing has to be rebuilt from text.
     NEEDS_SOURCE = False
+    #: No process is started at all, so nothing here is worth capping.
+    MAX_LIVE = 64
 
     def __init__(
         self,

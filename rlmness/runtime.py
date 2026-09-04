@@ -36,14 +36,53 @@ class CellOutcome:
     error: str | None = None
 
 
-class ProtocolRuntime:
-    def __init__(self, process, prompt, bridges, timeout, tools=()):
+class ProcessChannel:
+    """One process, one sandbox, talking over its own pipes."""
+
+    def __init__(self, process):
         self.process = process
+        self.inbox: queue.Queue = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        for line in self.process.stdout:
+            self.inbox.put(line)
+        self.inbox.put(None)
+
+    def send(self, message):
+        try:
+            self.process.stdin.write(json.dumps(message, default=str) + "\n")
+            self.process.stdin.flush()
+        except (BrokenPipeError, ValueError, OSError) as exc:
+            raise RuntimeGone("runtime is not accepting input") from exc
+
+    def kill(self):
+        try:
+            self.process.kill()
+        except OSError:
+            pass
+
+    def shutdown(self):
+        try:
+            self.send({"op": "shutdown"})
+            self.process.wait(timeout=5)
+        except (RuntimeGone, subprocess.TimeoutExpired):
+            self.kill()
+
+
+class ProtocolRuntime:
+    """The wire protocol, over whatever channel carries it.
+
+    The channel is a seam rather than a process, because a sandbox does not
+    have to own one: several can share a single interpreter host and still be
+    as separate from each other as they would be in separate processes.
+    """
+
+    def __init__(self, channel, prompt, bridges, timeout, tools=()):
+        self.channel = channel
         self.timeout = timeout
         self.bridges = dict(bridges)
         self._closed = False
-        self._inbox: queue.Queue = queue.Queue()
-        threading.Thread(target=self._pump, daemon=True).start()
 
         # Tools travel as source and are defined inside the namespace, so a
         # call to one never reaches back across this boundary.
@@ -62,34 +101,27 @@ class ProtocolRuntime:
         if ready.get("op") != "ready":
             raise RuntimeGone(f"runtime failed to start: {ready!r}")
 
-    def _pump(self):
-        for line in self.process.stdout:
-            self._inbox.put(line)
-        self._inbox.put(None)
+    @property
+    def process(self):
+        """The process behind the channel, when there is one to itself."""
+        return getattr(self.channel, "process", None)
 
     def _write(self, message):
-        try:
-            self.process.stdin.write(json.dumps(message, default=str) + "\n")
-            self.process.stdin.flush()
-        except (BrokenPipeError, ValueError, OSError) as exc:
-            raise RuntimeGone("runtime is not accepting input") from exc
+        self.channel.send(message)
 
     def _receive(self):
         try:
-            line = self._inbox.get(timeout=self.timeout)
+            line = self.channel.inbox.get(timeout=self.timeout)
         except queue.Empty:
             self._kill()
             raise CellTimeout(f"no response within {self.timeout}s")
         if line is None:
             raise RuntimeGone("runtime exited")
-        return json.loads(line)
+        return line if isinstance(line, dict) else json.loads(line)
 
     def _kill(self):
         self._closed = True
-        try:
-            self.process.kill()
-        except OSError:
-            pass
+        self.channel.kill()
 
     def _serve_bridge(self, message) -> None:
         name = message.get("name")
@@ -153,14 +185,7 @@ class ProtocolRuntime:
         if self._closed:
             return
         self._closed = True
-        try:
-            self._write({"op": "shutdown"})
-            self.process.wait(timeout=5)
-        except (RuntimeGone, subprocess.TimeoutExpired):
-            try:
-                self.process.kill()
-            except OSError:
-                pass
+        self.channel.shutdown()
 
 
 class SubprocessRuntime(ProtocolRuntime):
@@ -168,6 +193,9 @@ class SubprocessRuntime(ProtocolRuntime):
     SEALED = False
     #: Its own process, so a tool has to be rebuilt from text.
     NEEDS_SOURCE = True
+    #: A bare interpreter, measured at about 4MB resident, so a wide tree
+    #: costs little.
+    MAX_LIVE = 32
 
     def __init__(
         self,
@@ -187,4 +215,4 @@ class SubprocessRuntime(ProtocolRuntime):
             bufsize=1,
             env=environment,
         )
-        super().__init__(process, prompt, bridges, timeout, tools)
+        super().__init__(ProcessChannel(process), prompt, bridges, timeout, tools)

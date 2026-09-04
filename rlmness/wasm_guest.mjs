@@ -1,4 +1,14 @@
-// The WASM guest side. Speaks the same protocol as cell_runner.py.
+// The WASM guest side: one process hosting many sandboxes.
+//
+// Each sandbox is its own Pyodide interpreter with its own globals, so two
+// agents can no more see each other than if they lived in separate processes.
+// What they share is the Node runtime around them, which is the part that
+// costs 34MB and buys nothing per agent: a second interpreter in this process
+// costs about 45MB, against 122MB for a second process holding one.
+//
+// Every message carries `sid`, naming which sandbox it belongs to. Work is
+// chained per sandbox rather than globally, so one agent's slow cell does not
+// hold up another's — which is the whole point of a fan-out.
 
 import { loadPyodide } from "pyodide";
 import process from "node:process";
@@ -98,91 +108,119 @@ async def _exec_cell(src):
     )
 `;
 
-async function main() {
+// sid -> { py, chain, pending, nextId }
+const sandboxes = new Map();
+
+async function open(sid, msg) {
   const py = await loadPyodide();
   py.setStdout({ batched: () => {} });
   py.setStderr({ batched: () => {} });
 
-  const pending = new Map();
-  let nextId = 1;
+  const box = { py, chain: Promise.resolve(), pending: new Map(), nextId: 1 };
+  sandboxes.set(sid, box);
 
   // Arguments and results cross the FFI as JSON strings: auto-conversion turns
   // containers into proxies whose shape differs by type, and the protocol is
   // JSON on the wire anyway.
   function bridge(name, argsJson, kwargsJson) {
-    const id = nextId++;
+    const id = box.nextId++;
     send({
+      sid,
       op: "bridge",
       name,
       args: JSON.parse(argsJson),
       kwargs: JSON.parse(kwargsJson),
       _id: id,
     });
-    return new Promise((resolve) => pending.set(id, resolve));
+    return new Promise((resolve) => box.pending.set(id, resolve));
   }
 
-  async function handle(msg) {
-    if (msg.op === "bridge_result") {
-      const resolve = pending.get(msg._id);
-      if (resolve) {
-        pending.delete(msg._id);
-        resolve(JSON.stringify({ ok: msg.ok, value: msg.value, error: msg.error }));
-      }
-      return;
-    }
-    if (msg.op === "init") {
-      py.globals.set("_PROMPT_JSON", JSON.stringify(msg.prompt ?? ""));
-      py.globals.set("_bridge", bridge);
-      await py.runPythonAsync(SETUP_PY);
-      for (const name of msg.bridges || []) {
-        py.globals.set("_bridge_name", name);
-        await py.runPythonAsync("globals()[_bridge_name] = _make_proxy(_bridge_name)\n");
-      }
-      // Only the source crosses, and only now. A later call to a tool is an
-      // ordinary Python call that never reaches back out here.
-      py.globals.set("_TOOLS_JSON", JSON.stringify(msg.tools ?? []));
-      await py.runPythonAsync("_install_tools(_TOOLS_JSON)\n");
-      py.globals.set("_SUMMARISER_SRC", msg.summariser ?? "");
-      await py.runPythonAsync("_install_summariser(_SUMMARISER_SRC)\n");
-      send({ op: "ready" });
-      return;
-    }
-    if (msg.op === "snapshot") {
-      const variablesJson = await py.runPythonAsync("_snapshot()");
-      send({ op: "namespace", variables: JSON.parse(variablesJson) });
-      return;
-    }
-    if (msg.op === "exec") {
-      py.globals.set("_CELL_SRC", msg.code ?? "");
-      const resultJson = await py.runPythonAsync("await _exec_cell(_CELL_SRC)");
-      send({ op: "result", ...JSON.parse(resultJson) });
-      return;
-    }
-    if (msg.op === "shutdown") {
-      process.exit(0);
-    }
+  py.globals.set("_PROMPT_JSON", JSON.stringify(msg.prompt ?? ""));
+  py.globals.set("_bridge", bridge);
+  await py.runPythonAsync(SETUP_PY);
+  for (const name of msg.bridges || []) {
+    py.globals.set("_bridge_name", name);
+    await py.runPythonAsync("globals()[_bridge_name] = _make_proxy(_bridge_name)\n");
   }
-
-  // bridge_result is handled the moment it lands, never queued behind an exec —
-  // that is what lets an awaited bridge resolve while a cell is still running.
-  const lines = readline.createInterface({ input: process.stdin });
-  let chain = Promise.resolve();
-  lines.on("line", (line) => {
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      return;
-    }
-    if (msg.op === "bridge_result") {
-      handle(msg);
-    } else {
-      chain = chain.then(() => handle(msg));
-    }
-  });
+  // Only the source crosses, and only now. A later call to a tool is an
+  // ordinary Python call that never reaches back out here.
+  py.globals.set("_TOOLS_JSON", JSON.stringify(msg.tools ?? []));
+  await py.runPythonAsync("_install_tools(_TOOLS_JSON)\n");
+  py.globals.set("_SUMMARISER_SRC", msg.summariser ?? "");
+  await py.runPythonAsync("_install_summariser(_SUMMARISER_SRC)\n");
+  send({ sid, op: "ready" });
 }
 
-main().catch((error) => {
-  process.stderr.write("worker fatal: " + (error && error.stack ? error.stack : error) + "\n");
-  process.exit(1);
+async function handle(msg) {
+  const sid = msg.sid;
+
+  if (msg.op === "init") {
+    try {
+      await open(sid, msg);
+    } catch (error) {
+      send({ sid, op: "failed", error: String((error && error.stack) || error) });
+    }
+    return;
+  }
+
+  const box = sandboxes.get(sid);
+  if (!box) return;
+
+  if (msg.op === "exec") {
+    box.py.globals.set("_CELL_SRC", msg.code ?? "");
+    const resultJson = await box.py.runPythonAsync("await _exec_cell(_CELL_SRC)");
+    send({ sid, op: "result", ...JSON.parse(resultJson) });
+    return;
+  }
+  if (msg.op === "snapshot") {
+    const variablesJson = await box.py.runPythonAsync("_snapshot()");
+    send({ sid, op: "namespace", variables: JSON.parse(variablesJson) });
+    return;
+  }
+  if (msg.op === "close") {
+    sandboxes.delete(sid);
+    send({ sid, op: "closed" });
+    return;
+  }
+}
+
+const lines = readline.createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (msg.op === "shutdown") {
+    process.exit(0);
+  }
+  // A bridge result is handed straight to the promise waiting for it, never
+  // queued behind an exec — that is what lets an awaited bridge resolve while
+  // the cell that called it is still running.
+  if (msg.op === "bridge_result") {
+    const box = sandboxes.get(msg.sid);
+    const resolve = box && box.pending.get(msg._id);
+    if (resolve) {
+      box.pending.delete(msg._id);
+      resolve(JSON.stringify({ ok: msg.ok, value: msg.value, error: msg.error }));
+    }
+    return;
+  }
+  if (msg.op === "init") {
+    // A new sandbox has no chain yet, and opening it must not sit behind
+    // another sandbox's work.
+    handle(msg);
+    return;
+  }
+  // Everything else is chained per sandbox: one agent's cells run in order,
+  // and a slow cell holds up only its own agent.
+  const box = sandboxes.get(msg.sid);
+  if (!box) return;
+  box.chain = box.chain.then(() => handle(msg)).catch((error) => {
+    send({ sid: msg.sid, op: "result", stdout: "", final: null, has_final: false,
+           error: String((error && error.stack) || error) });
+  });
 });
+
+process.stdin.on("end", () => process.exit(0));
