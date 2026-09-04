@@ -109,6 +109,8 @@ class ChatClient:
         max_retries: int = 3,
         timeout: float = 120.0,
         backoff: float = 0.5,
+        temperature: float | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.provider = provider or type(self).provider
         key = api_key or os.environ.get(self.provider.env_var)
@@ -118,7 +120,25 @@ class ChatClient:
         self.client = client or httpx.Client(timeout=timeout)
         self.max_retries = max_retries
         self.backoff = backoff
+        self.temperature = temperature
+        self.reasoning_effort = reasoning_effort
+        self._reasoning_refused = False
         self._sleep = time.sleep
+
+    def _body(self, messages: Sequence[Message], model: str) -> dict:
+        """The request, carrying only the knobs that were actually set.
+
+        An unset knob is left out rather than sent as a default, because not
+        every endpoint accepts every field and a rejected request is worse
+        than an unspecified one. Reasoning effort in particular is not
+        universal, so it is dropped once a provider has refused it.
+        """
+        body: dict = {"model": model, "messages": list(messages)}
+        if self.temperature is not None:
+            body["temperature"] = self.temperature
+        if self.reasoning_effort and not self._reasoning_refused:
+            body["reasoning"] = {"effort": self.reasoning_effort}
+        return body
 
     def _post(self, messages: Sequence[Message], model: str) -> httpx.Response:
         for attempt in range(self.max_retries + 1):
@@ -127,12 +147,22 @@ class ChatClient:
                 response = self.client.post(
                     self.provider.endpoint,
                     headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={"model": model, "messages": list(messages)},
+                    json=self._body(messages, model),
                 )
             except httpx.TransportError:
                 if last:
                     raise
             else:
+                if (
+                    response.status_code == 400
+                    and self.reasoning_effort
+                    and not self._reasoning_refused
+                ):
+                    # Some endpoints reject the reasoning field outright. Drop
+                    # it and try once more rather than failing the run over a
+                    # setting that is an optimisation, not a requirement.
+                    self._reasoning_refused = True
+                    continue
                 if response.status_code not in RETRIABLE_STATUS or last:
                     response.raise_for_status()
                     return response
