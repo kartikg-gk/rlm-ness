@@ -293,17 +293,39 @@ def solve(
 
     def _spread(work, items):
         """Run `work` over `items` concurrently, abandoning the rest on the
-        first failure rather than paying for results nobody will read."""
+        first failure rather than paying for results nobody will read.
+
+        A slot is claimed per child, for as long as that child lives, rather
+        than for the batch up front. Claiming the batch's worth in advance
+        made a nested fan-out share the ceiling badly: a parent's batch held
+        its slots for the whole of its children's work, so the last branch to
+        ask could find none left and run its own children strictly one at a
+        time — a single starved branch, fully serial, while the rest were
+        parallel. Measured at eight times slower than the same work spread
+        flat.
+
+        Per-child claiming spends the same ceiling evenly. A child that cannot
+        get a slot still runs, because refusing to start would deadlock a tree
+        against its own descendants; the ceiling stays a brake rather than a
+        gate.
+        """
         items = list(items)
         if not items:
             return []
-        wanted = min(len(items), max(1, config.max_concurrent))
-        taken = allowance.claim_slots(wanted)
+        width = min(len(items), max(1, config.max_concurrent))
         token = threading.Event()
-        pool = ThreadPoolExecutor(max_workers=max(1, taken))
+        pool = ThreadPoolExecutor(max_workers=width)
+
+        def slotted(item, cancel_token):
+            held = allowance.claim_slots(1)
+            try:
+                return work(item, cancel_token)
+            finally:
+                allowance.release_slots(held)
+
         futures = []
         try:
-            futures = [pool.submit(work, item, token) for item in items]
+            futures = [pool.submit(slotted, item, token) for item in items]
             return [future.result() for future in futures]
         except BaseException:
             token.set()
@@ -312,7 +334,6 @@ def solve(
             raise
         finally:
             pool.shutdown(wait=False)
-            allowance.release_slots(taken)
 
     def _gather_rlm(subprompts, instruction=None, tools=None):
         if not can_recurse:
