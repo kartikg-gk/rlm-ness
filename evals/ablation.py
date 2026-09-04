@@ -88,7 +88,14 @@ def _watching(backend, flags):
 def _once(task: Task, config: Config, provider: str) -> Outcome:
     allowance = Allowance.from_config(config)
     flags = {"spawned": False, "helped": False}
-    backend = _watching(make_client(provider), flags)
+    backend = _watching(
+        make_client(
+            provider,
+            temperature=config.temperature,
+            reasoning_effort=config.reasoning_effort,
+        ),
+        flags,
+    )
     counter = StepCounter()
 
     start = time.perf_counter()
@@ -144,20 +151,26 @@ def main() -> int:
     parser.add_argument("--tasks", default="sanity", help="sanity | longbench[:config]")
     parser.add_argument("-n", "--num-samples", type=int, default=3)
     parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--max-steps", type=int, default=6)
+    parser.add_argument("--max-steps", type=int, default=20)
+    parser.add_argument("--truncate-len", type=int, default=2000)
+    parser.add_argument("--max-depth", type=int, default=3)
     arguments = parser.parse_args()
 
+    _defaults = Config(primary_agent=arguments.model)
     base = Config(
         primary_agent=arguments.model,
         max_steps=arguments.max_steps,
-        truncate_len=6000,
+        truncate_len=arguments.truncate_len,
         timeout=300.0,
-        max_depth=2,
-        max_calls=80,
+        max_depth=arguments.max_depth,
+        # Taken from the shared defaults rather than restated here: a
+        # ceiling that binds before a delegating tree finishes turns this
+        # harness into a measurement of its own budget.
+        max_calls=_defaults.max_calls,
         max_cost=1e9,
-        max_concurrent=8,
-        max_live=16,
-        max_seconds=1800,
+        max_concurrent=_defaults.max_concurrent,
+        max_live=_defaults.max_live,
+        max_seconds=_defaults.max_seconds or 1800,
     )
     if not hasattr(base, arguments.setting):
         raise SystemExit(f"no such setting: {arguments.setting}")

@@ -18,14 +18,29 @@ class MissingModel(Exception):
 class Config:
     primary_agent: str
     sub_agent: str | None = None
-    max_steps: int = 8
-    truncate_len: int = 10000
+    # A step is one model call. Delegating costs one turn to set up and one
+    # to read the answers back, which only buys anything when there are
+    # turns to spare.
+    max_steps: int = 20
+    # How much of a cell's output comes back. Generous truncation lets the
+    # model read a chunk itself rather than hand it to a helper, which is
+    # the choice this whole design exists to make attractive.
+    truncate_len: int = 2000
     timeout: float = 120.0
     max_depth: int = 3
-    max_calls: int = 60
-    max_cost: float = 0.5
-    max_concurrent: int = 8
-    max_live: int = 16
+    # Tree-wide, not per agent. It has to clear the worst honest tree —
+    # a root spending every step plus a gather of children doing the same —
+    # or it stops being a backstop and becomes a tax on delegating.
+    max_calls: int = 400
+    max_cost: float = 1.0
+    # A gather that cannot get slots runs its children one after another,
+    # so a tight ceiling here does not fail a run — it quietly makes
+    # delegating the slower choice, which is worse.
+    max_concurrent: int = 16
+    # Not unbounded, because every live agent here is a real process. A
+    # design that keeps its sandboxes inside one process can afford to
+    # have no ceiling at all; this one cannot.
+    max_live: int = 32
     max_seconds: float | None = None
     max_completion_tokens: int | None = None
     max_prompt_tokens: int | None = None
@@ -33,8 +48,16 @@ class Config:
     provider: str = "openrouter"
     api_max_retries: int = 3
     api_backoff: float = 0.5
+    # Code generation wants a near-deterministic sample, and thinking that
+    # happens inside the model is thinking the REPL never sees — a run that
+    # reasons its way to an answer has skipped the mechanism entirely.
+    temperature: float | None = 0.1
+    reasoning_effort: str | None = "low"
     # Ablations. Turn one off to measure what it was worth.
-    enable_step_banner: bool = True
+    # Off by default. Counting down the remaining steps is scarcity
+    # pressure, and a model with two turns left will not begin work that
+    # costs two turns — which is exactly what delegating costs.
+    enable_step_banner: bool = False
     enable_delegation: bool = True
     # Refuse a first-step answer that never read PROMPT. Off by default: the
     # run now opens by reading PROMPT, which makes answering blind much less
@@ -100,6 +123,11 @@ def load_config(
         provider=provider or raw.get("provider") or defaults.provider,
         api_max_retries=int(raw.get("api_max_retries", defaults.api_max_retries)),
         api_backoff=float(raw.get("api_backoff", defaults.api_backoff)),
+        temperature=(
+            float(raw["temperature"]) if raw.get("temperature") is not None
+            else defaults.temperature
+        ),
+        reasoning_effort=raw.get("reasoning_effort", defaults.reasoning_effort) or None,
         enable_step_banner=bool(
             raw.get("enable_step_banner", defaults.enable_step_banner)
         ),

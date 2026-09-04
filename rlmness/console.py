@@ -71,6 +71,8 @@ def main(argv=None, *, backend=None) -> int:
             config.provider,
             max_retries=config.api_max_retries,
             backoff=config.api_backoff,
+            temperature=config.temperature,
+            reasoning_effort=config.reasoning_effort,
         )
     except MissingApiKey as error:
         # Nothing can run without a key, so this is fatal either way. Say which
