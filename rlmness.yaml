@@ -1,4 +1,9 @@
 primary_agent: z-ai/glm-5
+# Children run on a cheaper model than the root. Delegating then costs
+# less than doing the same work yourself, which is the difference
+# between recursion being allowed and recursion being worth it. Both
+# reach through the same key, so this needs no extra setup.
+sub_agent: minimax/minimax-m2.5
 max_steps: 20
 truncate_len: 2000
 timeout: 120
