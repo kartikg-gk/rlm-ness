@@ -107,7 +107,11 @@ class ChatClient:
         provider: Provider | None = None,
         client: httpx.Client | None = None,
         max_retries: int = 3,
-        timeout: float = 120.0,
+        # A minute, matching the config default. A caller that forgets to
+        # pass one should still get a bound worth having: threading a
+        # setting through every caller does not help the caller that was
+        # written before the setting existed.
+        timeout: float = 60.0,
         backoff: float = 0.5,
         temperature: float | None = None,
         reasoning_effort: str | None = None,
