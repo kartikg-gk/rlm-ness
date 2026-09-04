@@ -164,10 +164,10 @@ def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False) -> 
     by writing a fetch and reading the failure, which costs a turn to learn
     something the runtime knew all along.
     """
-    # There is one kind of helper, and it is a sub-agent. A flat call was
-    # offered here once; a model given both took the cheap one every time,
-    # and a flat call cannot cut or search the piece it is handed, which is
-    # the whole point of handing it over.
+    # One kind of helper is described, and it is a sub-agent. A flat call
+    # cannot cut or search the piece it is handed, which is the whole
+    # point of handing it over, so offering both only invites the weaker
+    # one to be chosen on price.
     parts = [_BASE]
     if can_recurse:
         parts.append(_RECURSIVE)

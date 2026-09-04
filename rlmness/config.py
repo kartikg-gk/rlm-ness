@@ -37,9 +37,9 @@ class Config:
     # so a tight ceiling here does not fail a run — it quietly makes
     # delegating the slower choice, which is worse.
     max_concurrent: int = 16
-    # Not unbounded, because every live agent here is a real process. A
-    # design that keeps its sandboxes inside one process can afford to
-    # have no ceiling at all; this one cannot.
+    # Not unbounded, because every live agent is a real process and a wide
+    # tree of them is real memory. The runtime says what one of its own
+    # costs, and this is clamped to that.
     max_live: int = 32
     max_seconds: float | None = None
     max_completion_tokens: int | None = None
