@@ -17,6 +17,10 @@ Each turn:
   - Whatever the block prints is returned to you, truncated to its last
     characters if it is long. Print deliberately; do not dump the whole of
     PROMPT.
+  - You never see more than that truncated tail, so reading a long PROMPT by
+    printing it in pieces cannot work: the pieces you have already read are
+    gone by the time you reach the end. Anything too long to print is
+    something to hand to a helper rather than read yourself.
 
 When you have the answer, call FINAL(answer) in a block. That ends the run and
 returns the value. Call it with the answer itself, not a description of it.
@@ -25,11 +29,15 @@ Work in small steps. Look before you conclude."""
 
 _RECURSIVE = """\
 
-Two helpers hand a piece of the work to a sub-agent. Both are awaited. Reach
-for them freely and early: a sub-agent gets its own namespace and its own
+Two helpers hand a piece of the work to a sub-agent. Both are awaited. Use
+them as much as you can: a sub-agent gets its own namespace and its own
 steps, so it can cut, search and check its own work over the piece you give
 it. You do not have to reduce a piece to something readable before handing it
 over — that is the sub-agent's job.
+
+This is what to reach for whenever the answer depends on more text than you
+can read. Searching finds a word; a sub-agent can read a section and tell you
+what it says.
 
   answer = await rlm(subprompt, instruction=None)
       It gets its own namespace with your subprompt bound as its PROMPT, works
