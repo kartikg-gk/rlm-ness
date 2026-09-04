@@ -46,8 +46,9 @@ def _make_proxy(name):
                 "_id": _next_id,
             }
         )
+        call = _next_id
         reply = _read()
-        while reply.get("op") != "bridge_result":
+        while reply.get("op") != "bridge_result" or reply.get("_id") != call:
             reply = _read()
         if not reply.get("ok"):
             raise RuntimeError(reply.get("error", f"{name}() failed on the host"))
