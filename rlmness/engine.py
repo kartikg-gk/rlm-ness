@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import re
 import threading
 import time
@@ -100,27 +101,52 @@ class Answer:
     usage: Spend
 
 
-def first_runnable_block(text: str) -> str | None:
-    """Pick the block the model meant to run.
+def runnable_code(text: str) -> str | None:
+    """Everything the reply meant to run, as one cell.
 
-    Models sketch before they commit, and a fenced sketch looks exactly like a
-    fenced answer. Whether it parses is the only test that tells them apart, so
-    the first candidate that compiles wins. If none do, hand back the first
-    anyway: the resulting SyntaxError is the feedback that lets the model fix
-    itself.
+    A model that splits a plan across two blocks — set the chunks up here,
+    hand them out there — meant both to run. Taking only the first drops the
+    second silently, and the half that gets dropped is the half that does
+    something, because setup comes first.
+
+    Blocks that do not parse are left out rather than joined in. That is what
+    separates a sketch from an instruction: models illustrate before they
+    commit, and an illustration is rarely valid Python. Joining the survivors
+    keeps both behaviours — the sketch is still discarded, the real work is
+    still whole.
     """
     candidates = [
         body
         for tag, body in _FENCE.findall(text or "")
         if tag.lower() in PYTHON_TAGS
     ]
+    runnable = []
     for body in candidates:
         try:
             ast.parse(body)
         except SyntaxError:
             continue
-        return body
-    return candidates[0] if candidates else None
+        runnable.append(body)
+
+    if not runnable:
+        # Hand back the first anyway: the resulting SyntaxError is the
+        # feedback that lets the model fix itself.
+        return candidates[0] if candidates else None
+    if len(runnable) == 1:
+        return runnable[0]
+
+    joined = "\n".join(block.strip("\n") for block in runnable)
+    try:
+        ast.parse(joined)
+    except SyntaxError:
+        # Two halves that each parse but do not compose. The first is the one
+        # the model wrote first, so it is the one that was meant to run.
+        return runnable[0]
+    return joined
+
+
+#: The old name, from when only one block was ever run.
+first_runnable_block = runnable_code
 
 
 def budget_banner(used: int, max_steps: int) -> str:
@@ -206,7 +232,14 @@ def solve(
     prepared = describe(
         tools, need_source=getattr(runtime_factory, "NEEDS_SOURCE", True)
     )
-    allowance = allowance if allowance is not None else Allowance.from_config(config)
+    if allowance is None:
+        # What a live agent costs is the runtime's business, not the
+        # config's: the same number is a harmless throttle over one
+        # runtime and gigabytes of resident memory over another.
+        ceiling = getattr(runtime_factory, "MAX_LIVE", config.max_live)
+        allowance = Allowance.from_config(
+            dataclasses.replace(config, max_live=min(config.max_live, ceiling))
+        )
     model = config.model_for(depth)
     can_recurse = config.enable_delegation and allowance.can_recurse(depth)
 
@@ -291,7 +324,14 @@ def solve(
     def _gather_llm(texts):
         return _spread(lambda item, token: _llm(item), texts)
 
-    bridges = {"llm": _llm, "gather_llm": _gather_llm}
+    # Only what this agent is told about is bound. A name that exists but is
+    # never described is a trap, and a cheaper name described beside a better
+    # one is worse than a trap, because it gets used.
+    # Bound at every depth, including the last one, where calling it raises
+    # TOO_DEEP. A name that vanishes at the bottom of the tree gives a leaf a
+    # NameError instead of an explanation, and a NameError is a puzzle rather
+    # than an instruction. The prompt still only describes it where it works.
+    bridges: dict[str, Callable] = {}
     if config.enable_delegation:
         bridges.update({"rlm": _rlm, "gather_rlm": _gather_rlm})
     messages = [
@@ -379,7 +419,8 @@ def solve(
             {
                 "role": "user",
                 "content": opening_message(
-                    opening, shown, instruction, config.truncate_len
+                    opening, shown, instruction, config.truncate_len,
+                    is_child=depth > 0,
                 ),
             }
         )
@@ -403,7 +444,7 @@ def solve(
 
             timestamps = {"llm_call_start": llm_call_start, "llm_call_end": llm_call_end}
 
-            code = first_runnable_block(text)
+            code = runnable_code(text)
             if code is None:
                 emit(trace, "code_generated", run_id=run_id, step=step, code=None)
                 emit(
