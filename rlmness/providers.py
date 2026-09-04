@@ -149,6 +149,12 @@ class ChatClient:
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=self._body(messages, model),
                 )
+            except httpx.TimeoutException:
+                # A provider that did not answer in the time allowed is not
+                # likely to answer the identical question faster. One more try
+                # covers a blip; three more just multiply the wait.
+                if last or attempt >= 1:
+                    raise
             except httpx.TransportError:
                 if last:
                     raise

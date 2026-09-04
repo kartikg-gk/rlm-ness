@@ -48,6 +48,12 @@ class Config:
     provider: str = "openrouter"
     api_max_retries: int = 3
     api_backoff: float = 0.5
+    # How long one model call may hang before it is abandoned. Separate
+    # from `timeout`, which bounds a cell rather than a call. A provider
+    # that stops answering used to cost four full attempts at two minutes
+    # each, and a gather waits for every child, so one stuck call set the
+    # clock for a whole tree.
+    api_timeout: float = 60.0
     # Code generation wants a near-deterministic sample, and thinking that
     # happens inside the model is thinking the REPL never sees — a run that
     # reasons its way to an answer has skipped the mechanism entirely.
@@ -123,6 +129,7 @@ def load_config(
         provider=provider or raw.get("provider") or defaults.provider,
         api_max_retries=int(raw.get("api_max_retries", defaults.api_max_retries)),
         api_backoff=float(raw.get("api_backoff", defaults.api_backoff)),
+        api_timeout=float(raw.get("api_timeout", defaults.api_timeout)),
         temperature=(
             float(raw["temperature"]) if raw.get("temperature") is not None
             else defaults.temperature
