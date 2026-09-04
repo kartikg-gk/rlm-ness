@@ -93,6 +93,7 @@ def _once(task: Task, config: Config, provider: str) -> Outcome:
             provider,
             temperature=config.temperature,
             reasoning_effort=config.reasoning_effort,
+            timeout=config.api_timeout,
         ),
         flags,
     )

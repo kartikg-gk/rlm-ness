@@ -73,6 +73,7 @@ def main(argv=None, *, backend=None) -> int:
             backoff=config.api_backoff,
             temperature=config.temperature,
             reasoning_effort=config.reasoning_effort,
+            timeout=config.api_timeout,
         )
     except MissingApiKey as error:
         # Nothing can run without a key, so this is fatal either way. Say which
