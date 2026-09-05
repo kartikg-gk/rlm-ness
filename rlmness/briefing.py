@@ -25,7 +25,9 @@ Each turn:
 When you have the answer, call FINAL(answer) in a block. That ends the run and
 returns the value. Call it with the answer itself, not a description of it.
 
-Work in small steps. Look before you conclude."""
+A turn costs a model call whether the block runs one line or twenty, so do
+not spend one on a single probe. Work out what the next decision needs and
+put all of it in one block. Answer only from output you have read."""
 
 _RECURSIVE = """\
 
