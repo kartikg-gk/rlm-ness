@@ -120,12 +120,21 @@ def runnable_code(text: str) -> str | None:
         for tag, body in _FENCE.findall(text or "")
         if tag.lower() in PYTHON_TAGS
     ]
-    runnable = []
+    # A model that shows the same block twice — restating it after a sentence
+    # of explanation, or fencing one plan in two pieces — meant it to run
+    # once. Joining both copies runs every statement twice, which redefines
+    # names, doubles whatever was appended and fails outright on anything that
+    # cannot be repeated.
+    runnable, seen = [], set()
     for body in candidates:
         try:
             ast.parse(body)
         except SyntaxError:
             continue
+        settled = body.strip()
+        if settled in seen:
+            continue
+        seen.add(settled)
         runnable.append(body)
 
     if not runnable:
