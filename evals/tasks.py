@@ -17,6 +17,7 @@ import dataclasses
 import json
 import pathlib
 import re
+import shutil
 import urllib.request
 import zipfile
 from typing import Any, Callable
@@ -196,10 +197,15 @@ def _benchmark_archive() -> pathlib.Path:
         request = urllib.request.Request(
             LONGBENCH_URL, headers={"User-Agent": "rlm-ness-evals"}
         )
-        with urllib.request.urlopen(request) as response:
-            partial = archive.with_suffix(".part")
-            partial.write_bytes(response.read())
-            partial.replace(archive)
+        # Copied through in blocks rather than read whole: it is a hundred
+        # megabytes, and it arrives while a machine is about to spend the rest
+        # of its memory on the run this is fetching data for. It lands under a
+        # partial name so an interrupted download is never mistaken for a
+        # cached one.
+        partial = archive.with_suffix(".part")
+        with urllib.request.urlopen(request) as response, partial.open("wb") as handle:
+            shutil.copyfileobj(response, handle, 1 << 20)
+        partial.replace(archive)
     return archive
 
 
