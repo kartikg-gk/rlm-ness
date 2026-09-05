@@ -19,6 +19,7 @@ import argparse
 import dataclasses
 import re
 import statistics
+import sys
 import time
 
 from rlmness.providers import make_client
@@ -112,7 +113,7 @@ def _once(task: Task, config: Config, provider: str) -> Outcome:
         )
         score, failure = task.score(result.output), None
     except Exception as error:
-        score, failure = 0.0, type(error).__name__
+        score, failure = 0.0, _failure_label(error)
 
     # A root agent spends one call per step. Anything above that was spent by
     # a helper, whatever the reply happened to look like — arithmetic the
@@ -130,18 +131,44 @@ def _once(task: Task, config: Config, provider: str) -> Outcome:
     )
 
 
+def _failure_label(error: Exception) -> str:
+    """Say enough about a failure to tell it apart from a result.
+
+    A bare class name reads the same whether the run answered badly or never
+    reached the model at all. A spent key comes back as a refusal with a
+    status on it, and reported as just its type it sits in the table next to
+    real runs and gets counted as one.
+    """
+    message = str(error).strip().splitlines()
+    detail = message[0][:120] if message else ""
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+
+
 def _row(label: str, outcomes: list[Outcome]) -> str:
-    steps = [outcome.steps for outcome in outcomes]
+    """Average over the runs that happened, and count the ones that did not.
+
+    A run that failed has no steps and no delegation to report. Averaged in,
+    its zeros are indistinguishable from a run that went all the way and
+    chose not to delegate — which is the difference the whole table exists
+    to show.
+    """
+    done = [outcome for outcome in outcomes if not outcome.failure]
+    if not done:
+        return f"  {label:<4} nothing completed ({len(outcomes)} failed)"
+    steps = [outcome.steps for outcome in done]
     spread = statistics.stdev(steps) if len(steps) > 1 else 0.0
-    return (
-        f"  {label:<4} solved {sum(o.solved for o in outcomes)}/{len(outcomes)}"
-        f"  score {statistics.mean(o.score for o in outcomes):.2f}"
-        f"  delegated {sum(o.delegated for o in outcomes)}/{len(outcomes)}"
-        f"  helped {sum(o.helped for o in outcomes)}/{len(outcomes)}"
+    row = (
+        f"  {label:<4} solved {sum(o.solved for o in done)}/{len(done)}"
+        f"  score {statistics.mean(o.score for o in done):.2f}"
+        f"  delegated {sum(o.delegated for o in done)}/{len(done)}"
+        f"  helped {sum(o.helped for o in done)}/{len(done)}"
         f"  steps {statistics.mean(steps):.1f}±{spread:.1f}"
-        f"  calls {statistics.mean(o.calls for o in outcomes):.1f}"
-        f"  {statistics.mean(o.seconds for o in outcomes):.1f}s"
+        f"  calls {statistics.mean(o.calls for o in done):.1f}"
+        f"  {statistics.mean(o.seconds for o in done):.1f}s"
     )
+    if len(done) < len(outcomes):
+        row += f"  ({len(outcomes) - len(done)} failed)"
+    return row
 
 
 def main() -> int:
@@ -175,6 +202,13 @@ def main() -> int:
     )
     if not hasattr(base, arguments.setting):
         raise SystemExit(f"no such setting: {arguments.setting}")
+
+    # A run takes minutes per task and prints as it goes. Redirected to a
+    # file, the block buffer holds all of that until the process ends, so a
+    # run that is working looks exactly like one that has hung.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(line_buffering=True)
 
     tasks = resolve(arguments.tasks, arguments.num_samples)
     print(f"ablating {arguments.setting} on {arguments.provider}/{arguments.model}")
