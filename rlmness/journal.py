@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -14,8 +15,16 @@ TRACE_DIR = Path("traces")
 
 
 def default_path(name: str = "run") -> Path:
+    """A path no other run will pick, however close together they start.
+
+    Records are appended, so two runs that agree on a filename interleave
+    into one file and neither can be read afterwards. A second-resolution
+    stamp agrees far too easily: the clock behind it moves in 16ms jumps on
+    some platforms, so back-to-back runs land on the same value. The suffix
+    makes the name unique without giving up a stamp that sorts.
+    """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return TRACE_DIR / f"{name}_{stamp}.jsonl"
+    return TRACE_DIR / f"{name}_{stamp}_{secrets.token_hex(3)}.jsonl"
 
 
 class Journal:
