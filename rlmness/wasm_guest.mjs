@@ -23,12 +23,15 @@ import ast, io, json, contextlib, traceback
 
 PROMPT = json.loads(_PROMPT_JSON)
 
-class _Answered(Exception):
-    def __init__(self, value=None):
-        self.value = value
+# The cell's own record of whether FINAL was called this turn -- reset before
+# each cell runs, read after it finishes rather than raised, so code written
+# after FINAL runs the same as any other code and a later FINAL call
+# overwrites an earlier one the same way reassigning a variable would.
+_outcome = {"has_final": False, "final": None}
 
 def FINAL(value=None):
-    raise _Answered(value)
+    _outcome["has_final"] = True
+    _outcome["final"] = value
 
 def _make_proxy(name):
     async def proxy(*args, **kwargs):
@@ -91,19 +94,24 @@ def _snapshot():
 
 async def _exec_cell(src):
     buf = io.StringIO()
-    final, has_final, error = None, False, None
+    _outcome["has_final"] = False
+    _outcome["final"] = None
+    error = None
     try:
         code = compile(src, "<cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
         with contextlib.redirect_stdout(buf):
             coro = eval(code, globals())
             if coro is not None:
                 await coro
-    except _Answered as f:
-        has_final, final = True, f.value
     except BaseException:
         error = traceback.format_exc()
     return json.dumps(
-        {"stdout": buf.getvalue(), "final": final, "has_final": has_final, "error": error},
+        {
+            "stdout": buf.getvalue(),
+            "final": _outcome["final"],
+            "has_final": _outcome["has_final"],
+            "error": error,
+        },
         default=str,
     )
 `;
