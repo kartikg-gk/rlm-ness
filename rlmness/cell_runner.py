@@ -89,10 +89,13 @@ def _pump():
         _settle(future, False, "host closed the connection")
 
 
-class _Answered(Exception):
-    def __init__(self, value):
-        super().__init__(value)
-        self.value = value
+# The cell's own record of whether FINAL was called this turn. FINAL used to
+# raise and abort the rest of the block; now it just marks the outcome, so
+# code the model writes after FINAL runs exactly as it would in any other
+# cell -- a self-correction (a later FINAL call) overwrites this the same way
+# reassigning any other variable would, and a mistake after FINAL is reported
+# as an error without losing the answer that was already given.
+_outcome = {"has_final": False, "final": None}
 
 
 _next_id = 0
@@ -188,22 +191,25 @@ async def _drive(pending):
 
 def _exec_cell(code, namespace):
     buffer = io.StringIO()
-    final, has_final, error = None, False, None
+    _outcome["has_final"] = False
+    _outcome["final"] = None
+    error = None
     try:
         compiled = compile(code, "<cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
         with redirect_stdout(buffer):
             pending = eval(compiled, namespace)
             if pending is not None:
                 asyncio.run(_drive(pending))
-    except _Answered as signal:
-        has_final, final = True, signal.value
     except BaseException:
         error = traceback.format_exc()
+    # Read after the try, not out of it: a mistake in code written after FINAL
+    # still lands here as an error, but the answer already given is not lost
+    # to it.
     return {
         "op": "result",
         "stdout": buffer.getvalue(),
-        "final": final,
-        "has_final": has_final,
+        "final": _outcome["final"],
+        "has_final": _outcome["has_final"],
         "error": error,
     }
 
@@ -218,7 +224,8 @@ def main():
         namespace[name] = _make_proxy(name)
 
     def FINAL(answer=None):
-        raise _Answered(answer)
+        _outcome["has_final"] = True
+        _outcome["final"] = answer
 
     namespace["FINAL"] = FINAL
     _install_tools(init.get("tools", []), namespace)
