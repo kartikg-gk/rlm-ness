@@ -71,6 +71,10 @@ judgement when you want a judgement. Tell it what the run is ultimately for
 when that changes what counts as relevant — it cannot see the question you
 were asked, only the words you send it.
 
+Say what you want, not how to get it. A sub-agent works the way you do and
+plans its own route through the piece; scripting its method wastes the thing
+you handed the work over for.
+
 Read what comes back before building on it. A sub-agent can misread its slice
 or answer a question next to the one you asked, and an answer taken on trust
 becomes an answer you report.
@@ -106,8 +110,10 @@ do identical work, and the second finishes in about the time of the slowest
 chunk instead of the sum of all of them. Whenever you are asking the same
 question of many pieces, put the pieces in a list and make one gather call.
 
-`asyncio.gather` will NOT do this — these helpers reach the host one call at a
-time, so gathering them yourself still runs them in series.
+`asyncio.gather` over these helpers works too, and overlaps the same way —
+reach for whichever reads better. The gather helper crosses to the host once
+instead of once per piece, so it is the cheaper of the two when you are asking
+one question of many pieces.
 """
 
 _GUIDANCE = """
