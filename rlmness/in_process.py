@@ -25,12 +25,6 @@ from .namespace import summarise
 from .runtime import CellOutcome
 
 
-class _Answered(Exception):
-    def __init__(self, value=None):
-        super().__init__(value)
-        self.value = value
-
-
 def _awaitable(function: Callable) -> Callable:
     """Keep the bridge contract the prompt describes.
 
@@ -65,6 +59,11 @@ class InProcessRuntime:
         # runtimes are the ones that can be timed out.
         self.timeout = timeout
         self._closed = False
+        # Reset at the start of every execute() call. FINAL writes here
+        # instead of raising, so code the model writes after FINAL runs the
+        # same as it would in any other cell -- matching the other two
+        # runtimes, and the reference, rather than cutting the cell short.
+        self._outcome = {"has_final": False, "final": None}
         self.namespace: dict[str, Any] = {
             "__name__": "__rlm_cell__",
             "PROMPT": prompt,
@@ -78,13 +77,15 @@ class InProcessRuntime:
             # name the model sees.
             self.namespace[f"_tool_{tool.name}"] = tool.value
 
-    @staticmethod
-    def _final(value=None):
-        raise _Answered(value)
+    def _final(self, value=None):
+        self._outcome["has_final"] = True
+        self._outcome["final"] = value
 
     def execute(self, code: str) -> CellOutcome:
         buffer = io.StringIO()
-        final, has_final, error = None, False, None
+        self._outcome["has_final"] = False
+        self._outcome["final"] = None
+        error = None
         try:
             compiled = compile(
                 code, "<cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
@@ -93,14 +94,12 @@ class InProcessRuntime:
                 pending = eval(compiled, self.namespace)
                 if pending is not None:
                     asyncio.run(pending)
-        except _Answered as signal:
-            has_final, final = True, signal.value
         except BaseException:
             error = traceback.format_exc()
         return CellOutcome(
             stdout=buffer.getvalue(),
-            final=final,
-            has_final=has_final,
+            final=self._outcome["final"],
+            has_final=self._outcome["has_final"],
             error=error,
         )
 
