@@ -86,8 +86,33 @@ def _detail(usage: dict, section: str, field: str) -> int | None:
     return None
 
 
+def _reasoning_text(message: dict) -> str | None:
+    """The model's thinking, where the provider breaks it out.
+
+    Two shapes are in the wild: a plain string, or a list of blocks each
+    carrying its own text. Neither is universal and many providers send
+    nothing at all, so absent stays absent rather than becoming an empty
+    string -- "the model did not think aloud" and "nobody recorded it" are
+    different facts about a run.
+    """
+    raw = message.get("reasoning")
+    if isinstance(raw, str):
+        return raw or None
+    if isinstance(raw, list):
+        parts = [
+            block.get("text") or block.get("thinking") or ""
+            for block in raw
+            if isinstance(block, dict)
+        ]
+        joined = "\n".join(part for part in parts if part)
+        return joined or None
+    return None
+
+
 class ModelClient(Protocol):
-    def complete(self, messages: Sequence[Message], *, model: str) -> tuple[str, Spend]: ...
+    def complete(
+        self, messages: Sequence[Message], *, model: str
+    ) -> tuple[str, Spend] | tuple[str, Spend, str | None]: ...
 
 
 # Retrying anything else would repeat a request the provider has already
@@ -194,8 +219,14 @@ class ChatClient:
                 raw, "completion_tokens_details", "reasoning_tokens"
             ),
         )
-        text = payload["choices"][0]["message"].get("content") or ""
-        return text, usage
+        message = payload["choices"][0]["message"]
+        text = message.get("content") or ""
+        # Returned as a third item rather than folded into the text: it is not
+        # part of the reply the loop acts on, and a sink that keeps records
+        # wants it separable from the code the model actually wrote. Callers
+        # written against the two-item shape keep working -- see `_reply` in
+        # the engine.
+        return text, usage, _reasoning_text(message)
 
 
 class OpenRouterClient(ChatClient):
