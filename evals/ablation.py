@@ -76,12 +76,16 @@ def _watching(backend, flags):
 
     class Watched:
         def complete(self, messages, *, model):
-            text, usage = backend.complete(messages, model=model)
+            # Passed through whole rather than unpacked: a backend may report
+            # the model's reasoning as a third item, and a wrapper that only
+            # knows about two would quietly drop it on its way to the trace.
+            answer = backend.complete(messages, model=model)
+            text = answer[0]
             if SPAWNS.search(text):
                 flags["spawned"] = True
             if HELPERS.search(text):
                 flags["helped"] = True
-            return text, usage
+            return answer
 
     return Watched()
 

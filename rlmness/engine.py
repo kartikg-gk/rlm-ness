@@ -258,8 +258,8 @@ def solve(
 
     def _llm(text) -> str:
         allowance.reserve()
-        answer, usage = backend.complete(
-            [{"role": "user", "content": str(text)}], model=model
+        answer, usage, _ = _reply(
+            backend, [{"role": "user", "content": str(text)}], model
         )
         allowance.settle(usage)
         return answer
@@ -462,7 +462,7 @@ def solve(
             allowance.reserve()
             llm_call_start = _now()
             emit(trace, "step_started", run_id=run_id, step=step, started=llm_call_start)
-            text, usage = backend.complete(messages, model=model)
+            text, usage, reasoning = _reply(backend, messages, model)
             llm_call_end = _now()
             allowance.settle(usage)
             total = _add(total, usage)
@@ -481,7 +481,7 @@ def solve(
                     trace, "output_received",
                     run_id=run_id, step=step, output=NO_CODE, error=True,
                 )
-                _log(trace, depth, run_id, parent_run_id, step, None, NO_CODE, True, usage, timestamps)
+                _log(trace, depth, run_id, parent_run_id, step, None, NO_CODE, True, usage, timestamps, reasoning)
                 emit(
                     trace, "step_completed",
                     run_id=run_id, step=step, usage=usage, error=True, ended=_now(),
@@ -506,7 +506,7 @@ def solve(
                     trace, "output_received",
                     run_id=run_id, step=step, output=notice, error=True,
                 )
-                _log(trace, depth, run_id, parent_run_id, step, code, notice, True, usage, timestamps)
+                _log(trace, depth, run_id, parent_run_id, step, code, notice, True, usage, timestamps, reasoning)
                 emit(
                     trace, "step_completed",
                     run_id=run_id, step=step, usage=usage, error=True, ended=_now(),
@@ -524,7 +524,7 @@ def solve(
                     trace, "output_received",
                     run_id=run_id, step=step, output=output, error=False,
                 )
-                _log(trace, depth, run_id, parent_run_id, step, code, output, False, usage, timestamps)
+                _log(trace, depth, run_id, parent_run_id, step, code, output, False, usage, timestamps, reasoning)
                 emit(
                     trace, "step_completed",
                     run_id=run_id, step=step, usage=usage, error=False, ended=_now(),
@@ -543,7 +543,7 @@ def solve(
                 trace, "output_received",
                 run_id=run_id, step=step, output=labelled, error=bool(cell.error),
             )
-            _log(trace, depth, run_id, parent_run_id, step, code, labelled, bool(cell.error), usage, timestamps)
+            _log(trace, depth, run_id, parent_run_id, step, code, labelled, bool(cell.error), usage, timestamps, reasoning)
             emit(
                 trace, "step_completed",
                 run_id=run_id, step=step, usage=usage, error=bool(cell.error), ended=_now(),
@@ -562,7 +562,22 @@ def solve(
         runtime.close()
 
 
-def _log(trace, depth, run_id, parent_run_id, step, code, output, error, usage, timestamps) -> None:
+def _reply(backend, messages, model):
+    """One model call, whichever shape the backend answers in.
+
+    A backend may report the model's reasoning alongside the reply, and most
+    do not. Both are accepted rather than requiring every caller and every
+    test double to grow a third item they have nothing to put in.
+    """
+    answer = backend.complete(messages, model=model)
+    if len(answer) == 3:
+        return answer
+    text, usage = answer
+    return text, usage, None
+
+
+def _log(trace, depth, run_id, parent_run_id, step, code, output, error, usage,
+         timestamps, reasoning=None) -> None:
     """Write the after-the-fact record, for a sink that keeps one.
 
     Routed through `emit` like every other event, so a sink that only wants
@@ -580,4 +595,5 @@ def _log(trace, depth, run_id, parent_run_id, step, code, output, error, usage, 
         run_id=run_id,
         parent_run_id=parent_run_id,
         timestamps=timestamps,
+        reasoning=reasoning,
     )
