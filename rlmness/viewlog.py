@@ -44,7 +44,7 @@ def _indent(depth: int) -> str:
     return "  " * depth
 
 
-def render(path: Path | str, width: int | None = WIDTH) -> str:
+def render(path: Path | str, width: int | None = WIDTH, reasoning: bool = False) -> str:
     path = Path(path)
     records = _records(path)
     if not records:
@@ -60,11 +60,24 @@ def render(path: Path | str, width: int | None = WIDTH) -> str:
     for record in records:
         depth = record.get("depth", 0)
         pad = _indent(depth)
-        agents.add(depth)
+        kind = record.get("kind")
+        # Counted by identity, not by depth. A fan-out puts many agents at one
+        # depth, and counting depths reports a tree of nineteen as a tree of
+        # four. A record that carries no identity at all falls back to its
+        # depth, which is the best available answer and what this did for
+        # every record before identity was written down.
+        agents.add(record.get("run_id") or ("depth", depth))
 
-        if record.get("kind") == "final":
+        if kind == "final":
             lines.append(f"{pad}final: {record.get('result')!r}")
             lines.append("")
+            continue
+        # The record opens and closes each agent. Those are not steps, and
+        # counting them as steps adds two to every agent in the tree.
+        if kind in ("run_started", "run_completed", "run_failed"):
+            if kind == "run_failed" and record.get("error"):
+                lines.append(f"{pad}run failed: {record['error']}")
+                lines.append("")
             continue
 
         steps += 1
@@ -85,6 +98,17 @@ def render(path: Path | str, width: int | None = WIDTH) -> str:
         if output:
             for line in _shorten(output, width).splitlines():
                 lines.append(f"{pad}  > {line}")
+        thinking = (record.get("reasoning") or "").strip()
+        if thinking:
+            # Off unless asked for. It is usually the longest thing in a
+            # record and is wanted only when the question is why a step went
+            # the way it did, so the marker says it is there and the flag
+            # prints it.
+            if reasoning:
+                for line in _shorten(thinking, width).splitlines():
+                    lines.append(f"{pad}  ? {line}")
+            else:
+                lines.append(f"{pad}  ? [reasoning recorded; --reasoning to show]")
         lines.append("")
 
     spend = f"${cost:.4f}" if priced else "unknown (a provider reported no price)"
@@ -111,6 +135,11 @@ def main(argv=None) -> int:
         action="store_true",
         help="show code and output in full rather than shortened",
     )
+    parser.add_argument(
+        "--reasoning",
+        action="store_true",
+        help="show what the model said it was thinking, where a provider sent it",
+    )
     arguments = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     if arguments.trace is None:
@@ -132,7 +161,14 @@ def main(argv=None) -> int:
             print(f"not found: {arguments.trace}", file=sys.stderr)
             return 1
 
-    print(render(path, width=None if arguments.full else WIDTH), end="")
+    print(
+        render(
+            path,
+            width=None if arguments.full else WIDTH,
+            reasoning=arguments.reasoning,
+        ),
+        end="",
+    )
     return 0
 
 
