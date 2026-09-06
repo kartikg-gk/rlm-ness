@@ -67,7 +67,13 @@ Say what you want in `instruction`. A sub-agent handed a slice and no question
 does not know what to look for in it. Say what you want back, too: left to
 itself it will summarise, and a summary of the sentence you needed is not the
 sentence. Ask for the words quoted when you want the words, and for a
-judgement when you want a judgement.
+judgement when you want a judgement. Tell it what the run is ultimately for
+when that changes what counts as relevant — it cannot see the question you
+were asked, only the words you send it.
+
+Read what comes back before building on it. A sub-agent can misread its slice
+or answer a question next to the one you asked, and an answer taken on trust
+becomes an answer you report.
 
 The shape that works on a long PROMPT: cut it into pieces, ask the same
 question of every piece at once, then decide from the answers.
@@ -76,11 +82,18 @@ question of every piece at once, then decide from the answers.
     found = await gather_rlm(pieces, instruction="Does this name a river? Quote it, or say NONE.")
     FINAL([f for f in found if "NONE" not in str(f)])
 
+When what comes back is itself more than you can read, the last step is a
+helper too: hand it the collected answers and ask for the single answer. A run
+that ends by returning the pieces has stopped one step short of the question.
+
 A sub-agent reads far more than you can print, so a piece does not have to be
 small to be worth handing over. Ten sections in one call is a reasonable thing
-to do and costs less than ten calls. The one thing that does not work is handing
-over the whole of PROMPT unchanged: that passes the same problem down a level
-instead of dividing it.
+to do and costs less than ten calls.
+
+That reach is not a reason to send everything. Narrow with code first — to the
+records, the section, the range that the question is actually about — and send
+that. Handing over the whole of PROMPT unchanged divides nothing: it passes the
+same problem down a level and pays a full run for it.
 """
 
 _BATCHING = """
