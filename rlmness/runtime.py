@@ -98,6 +98,10 @@ class ProtocolRuntime:
             max_workers=32, thread_name_prefix="bridge"
         )
         self._writing = threading.Lock()
+        # How many sub-agent calls are running inside this runtime's current
+        # cell. While any is, the cell is waiting rather than hung.
+        self._bridges_in_flight = 0
+        self._bridge_count_lock = threading.Lock()
 
         # Tools travel as source and are defined inside the namespace, so a
         # call to one never reaches back across this boundary.
@@ -127,14 +131,27 @@ class ProtocolRuntime:
             self.channel.send(message)
 
     def _receive(self):
-        try:
-            line = self.channel.inbox.get(timeout=self.timeout)
-        except queue.Empty:
-            self._kill()
-            raise CellTimeout(f"no response within {self.timeout}s")
-        if line is None:
-            raise RuntimeGone("runtime exited")
-        return line if isinstance(line, dict) else json.loads(line)
+        while True:
+            try:
+                line = self.channel.inbox.get(timeout=self.timeout)
+            except queue.Empty:
+                # A cell that has handed work to a sub-agent is not hung, it is
+                # waiting — and a sub-agent's whole run happens inside its
+                # parent's cell, which takes as long as a run takes. Timing the
+                # parent out here killed the tree the moment delegation started
+                # working. The run as a whole is still bounded, by the
+                # allowance's wall clock and by each child's own limits.
+                if self._outstanding_bridges():
+                    continue
+                self._kill()
+                raise CellTimeout(f"no response within {self.timeout}s")
+            if line is None:
+                raise RuntimeGone("runtime exited")
+            return line if isinstance(line, dict) else json.loads(line)
+
+    def _outstanding_bridges(self) -> int:
+        with self._bridge_count_lock:
+            return self._bridges_in_flight
 
     def _kill(self):
         self._closed = True
@@ -155,6 +172,9 @@ class ProtocolRuntime:
         except Exception as error:
             self._reply(call_id, False, error=f"{type(error).__name__}: {error}")
             return
+        finally:
+            with self._bridge_count_lock:
+                self._bridges_in_flight -= 1
         self._reply(call_id, True, value=value)
 
     def _serve_bridge_async(self, message) -> None:
@@ -166,7 +186,16 @@ class ProtocolRuntime:
         if self._closed:
             self._reply(message.get("_id"), False, error="the runtime is closed")
             return
-        self._bridge_workers.submit(self._serve_bridge, message)
+        # Counted before the work is queued, so the receive loop never sees a
+        # gap where the call is neither in flight nor finished.
+        with self._bridge_count_lock:
+            self._bridges_in_flight += 1
+        try:
+            self._bridge_workers.submit(self._serve_bridge, message)
+        except BaseException:
+            with self._bridge_count_lock:
+                self._bridges_in_flight -= 1
+            raise
 
     def _reply(self, call_id, ok: bool, *, value=None, error=None) -> None:
         message = {"op": "bridge_result", "ok": ok, "_id": call_id}
