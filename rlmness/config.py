@@ -28,10 +28,22 @@ class Config:
     truncate_len: int = 2000
     timeout: float = 120.0
     max_depth: int = 3
-    # Tree-wide, not per agent. It has to clear the worst honest tree —
-    # a root spending every step plus a gather of children doing the same —
-    # or it stops being a backstop and becomes a tax on delegating.
-    max_calls: int = 400
+    # Tree-wide, not per agent, and a backstop rather than the guard that is
+    # meant to bite. `max_cost` is the one that should stop an ordinary run,
+    # because money is what is actually being spent; this exists for the
+    # providers that report no price at all, where cost can never fire.
+    #
+    # So it has to sit above the cost ceiling, not below it. At the prices
+    # measured on real runs — roughly $0.0015 to $0.002 a call — a $1.00
+    # ceiling is somewhere near 500 to 650 calls, and the old 400 fired first.
+    # That put the backstop in front of the guard: runs stopped on a call
+    # count while the budget they were given was still unspent.
+    #
+    # It also has to clear an honest tree deeper than one gather. A root
+    # spending every step plus one level of children is 20 + 16 x 20 = 340;
+    # a second level is far more, and delegating is the thing this project
+    # exists to do.
+    max_calls: int = 2000
     max_cost: float = 1.0
     # A gather that cannot get slots runs its children one after another,
     # so a tight ceiling here does not fail a run — it quietly makes
