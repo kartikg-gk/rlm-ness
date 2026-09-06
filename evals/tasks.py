@@ -80,11 +80,28 @@ def with_question_inside(task: Task, where: str = "top") -> Task:
 # Sanity tier — generated, cheap, non-differentiating by construction
 # --------------------------------------------------------------------------
 
+# Every document hedges, in the same words the question uses, and only one of
+# them hedges in the way the question asks about. A search for "weaken",
+# "overturn", "assumption" or "check" therefore returns all of them, which is
+# the point: the distinguishing fact is what the sentence claims, not which
+# words it is built from. An earlier version left "weaken" in the marker alone
+# and a model solved the whole thing with `if "weaken" in doc`.
 _FILLER = [
     "The evidence assembled here is consistent across the three surveys. ",
-    "Our assumption that the interval was uniform is supported by the notes. ",
-    "Some uncertainty attaches to the earliest readings, but the effect is small. ",
+    "Our assumption that the interval was uniform is supported by the notes, "
+    "and were it wrong the estimate would weaken somewhat without changing "
+    "which way it points. ",
+    "Some uncertainty attaches to the earliest readings, but the effect is "
+    "small and could not overturn the ordering. ",
     "The conclusion was checked against an independent series and they agree. ",
+    "There is an assumption here we could not check directly, though the "
+    "margin it could move is narrow. ",
+    "Nothing in the record would reverse the direction of the result, even "
+    "taking the least favourable reading of the gauge. ",
+    "A reading taken at the wrong hour would merely blur the picture; it "
+    "would not invert it. ",
+    "Were the gauge misread throughout, the finding would be weakened and "
+    "not overturned, since the ordering does not rest on it. ",
 ]
 
 _HEDGE = (
