@@ -231,6 +231,19 @@ def solve(
     run_id: str | None = None,
     parent_run_id: str | None = None,
 ) -> Answer:
+    """Answer a question about `prompt`, which the model never sees whole.
+
+    `instruction` is the question, kept apart from the data so the agent is
+    told what it is looking for rather than having to find that out first.
+
+    A caller holding one string that already contains both can pass it as
+    `prompt` and leave `instruction` unset. If so, put the question at the
+    very start or the very end of it. The opening step shows the model the
+    head and the tail of PROMPT and nothing in between, so a question buried
+    in the middle is one the agent has to go hunting for before it can begin —
+    and hunting for it looks exactly like hunting for the answer, which is how
+    a run spends half its steps before it starts.
+    """
     config = config or load_config()
     run_id = run_id or uuid.uuid4().hex
     runtime_factory = runtime_factory or RUNTIMES[config.runtime]
