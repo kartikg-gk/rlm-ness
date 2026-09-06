@@ -4,8 +4,30 @@ from __future__ import annotations
 
 PREVIEW = 500
 
+_ALONE_FRAME = """\
+You answer questions about data you cannot see all at once."""
+
+# The third rung of the method ladder, and the reason there is a ladder at all.
+_THIRD_RUNG = """ Something too big for either is
+what the helpers below are for: hand it over rather than working through it a
+window at a time."""
+
+_WHEN_STUCK_RECURSIVE = """ When a step leaves you
+no better off than the one before it, the fastest thing left is usually to
+hand the piece to a sub-agent rather than search it again from a new angle."""
+
+_WHEN_STUCK_ALONE = """ If a real attempt has
+left you stuck, say what you found and that you could not settle it, rather
+than spending more steps circling it."""
+
+_RECURSIVE_FRAME = """\
+You answer questions about data you cannot see all at once, working in a
+namespace that can hand pieces of it to other agents like you. Handing work
+out is the ordinary way of getting something done here, not a last resort for
+when you are stuck."""
+
 _BASE = """\
-You answer questions about data you cannot see all at once.
+{frame}
 
 The data is bound as PROMPT inside a persistent Python namespace. You never
 receive it as text. To learn anything about it, you write code that inspects it
@@ -13,7 +35,10 @@ and read the output.
 
 Each turn:
   - Reply with exactly one fenced Python block and nothing else that matters.
-  - The block runs in the namespace. Names you bind persist into later turns.
+  - The block runs in the namespace. Names you bind persist into later
+    turns, so build on what is there instead of rebuilding it. PROMPT is
+    the one name to leave alone: rebind it and the data is gone for the
+    rest of the run.
   - Whatever the block prints is returned to you, truncated to its last
     characters if it is long. Print deliberately; do not dump the whole of
     PROMPT.
@@ -25,11 +50,32 @@ Each turn:
 When you have the answer, call FINAL(answer) in a block. That ends the run and
 returns the value. Call it with the answer itself, not a description of it.
 
+FINAL takes whatever you pass it, so when the answer is text that is already
+in the namespace, pass the thing itself — FINAL(passage) — rather than
+retyping it. Retyping is where wording drifts, and a quote that has drifted is
+no longer a quote.
+
+Match the method to what you are holding. Something short enough to print, you
+read. Something with structure — records, sections, a delimiter — you take
+apart with code, because code sees all of it where you see only the tail.
+Printing piece after piece is neither of those, and it is the one approach that
+cannot work here.{third_rung}
+
+Someone is waiting through every step you take, so prefer the method that
+finishes to the one that explores.{when_stuck}
+
 A turn costs a model call whether the block runs one line or twenty, so do
 not spend one on a single probe. Work out what the next decision needs and
-put all of it in one block. Answer only from output you have read."""
+put all of that in one block.
 
-_RECURSIVE = """\
+The answer is not part of that. A block's output only reaches you once the
+whole block has finished, so a FINAL written in the same block as the code
+meant to inform it was decided before a single line of that output existed —
+and it will stand even if every search in that block came back empty. There
+are more turns than this one. Look in this block, read what it printed, then
+answer in the next."""
+
+_RECURSIVE = """
 
 Two helpers hand a piece of the work to a sub-agent. Both are awaited. Use
 them as much as you can: a sub-agent gets its own namespace and its own
@@ -50,17 +96,55 @@ what it says.
       The same over a list, run at the same time, results in the order given.
 
 Say what you want in `instruction`. A sub-agent handed a slice and no question
-does not know what to look for in it.
+does not know what to look for in it. Say what you want back, too: left to
+itself it will summarise, and a summary of the sentence you needed is not the
+sentence. Ask for the words quoted when you want the words, and for a
+judgement when you want a judgement. Tell it what the run is ultimately for
+when that changes what counts as relevant — it cannot see the question you
+were asked, only the words you send it.
 
-The shape that works on a long PROMPT: cut it into pieces, ask the same
-question of every piece at once, then decide from the answers.
+Say what you want, not how to get it. A sub-agent works the way you do and
+plans its own route through the piece; scripting its method wastes the thing
+you handed the work over for.
+
+Read what comes back before building on it. A sub-agent can misread its slice
+or answer a question next to the one you asked, and an answer taken on trust
+becomes an answer you report.
+
+The first move on a long PROMPT, before any searching: cut it into a handful
+of big consecutive pieces, ask every piece the same question at once, and
+decide from what comes back.
 
     pieces = [PROMPT[i:i + 20000] for i in range(0, len(PROMPT), 20000)]
     found = await gather_rlm(pieces, instruction="Does this name a river? Quote it, or say NONE.")
     FINAL([f for f in found if "NONE" not in str(f)])
 
-A sub-agent handed nearly all of PROMPT has saved nothing and costs a full run.
-Cut first, then delegate the cuts.
+You do not need to know where the answer is to do this, and waiting until you
+do is the mistake. Searching only finds a passage that shares words with your
+question, and the passage that answers a question usually does not — so a
+search that keeps almost working can absorb every step you have while the
+pieces sit unread. Seven pieces of twenty thousand characters is one call and
+covers all of it.
+
+When what comes back is itself more than you can read, the last step is a
+helper too: hand it the collected answers and ask for the single answer. A run
+that ends by returning the pieces has stopped one step short of the question.
+
+A sub-agent reads far more than you can print, so a piece does not have to be
+small to be worth handing over. Ten sections in one call is a reasonable thing
+to do and costs less than ten calls. If the whole of PROMPT fits in one
+sub-agent, sending the whole of it with the question is a fair first move and
+often the shortest one — a helper that can read it all does not have your
+problem, and asking it costs one call against the ten a search will spend.
+
+The judgement to make is how many pieces, not whether to send much. Cut where
+it helps: several pieces asked at once come back in the time of the slowest,
+and each answer is about a part you can then name. One piece is right when the
+question needs the whole to answer it; several are right when the answer lives
+in one place and you do not know which.
+
+What does not work is sending a piece with no question attached. That hands
+down the problem instead of the work.
 """
 
 _BATCHING = """
@@ -73,8 +157,10 @@ do identical work, and the second finishes in about the time of the slowest
 chunk instead of the sum of all of them. Whenever you are asking the same
 question of many pieces, put the pieces in a list and make one gather call.
 
-`asyncio.gather` will NOT do this — these helpers reach the host one call at a
-time, so gathering them yourself still runs them in series.
+`asyncio.gather` over these helpers works too, and overlaps the same way —
+reach for whichever reads better. The gather helper crosses to the host once
+instead of once per piece, so it is the cheaper of the two when you are asking
+one question of many pieces.
 """
 
 _GUIDANCE = """
@@ -88,7 +174,10 @@ it — the words you would search for are usually the ones a writer avoids. Cut
 the data into pieces and hand them out; that is what the helpers are for, and
 it is the shorter path. You do not have to exhaust searching first.
 
-Give the pieces out in one gather call rather than one at a time.\
+Give the pieces out in one gather call rather than one at a time.
+
+If a step leaves you no better off than the one before it, that is the moment
+to hand the piece out, not to look at it again yourself.\
 """
 
 _ALONE = """
@@ -166,11 +255,23 @@ def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False) -> 
     by writing a fetch and reading the failure, which costs a turn to learn
     something the runtime knew all along.
     """
+    # Recursion is described in the frame rather than appended after it. An
+    # agent told how the environment works and then, separately, that helpers
+    # also exist, reads the helpers as an extra — and a model reading that
+    # works alone and delegates only when cornered. The three slots put the
+    # same fact where the work is decided: what this place is, what to do
+    # with something too big to read, and where to turn when a step gains
+    # nothing.
+    base = _BASE.format(
+        frame=_RECURSIVE_FRAME if can_recurse else _ALONE_FRAME,
+        third_rung=_THIRD_RUNG if can_recurse else "",
+        when_stuck=_WHEN_STUCK_RECURSIVE if can_recurse else _WHEN_STUCK_ALONE,
+    )
     # One kind of helper is described, and it is a sub-agent. A flat call
     # cannot cut or search the piece it is handed, which is the whole
     # point of handing it over, so offering both only invites the weaker
     # one to be chosen on price.
-    parts = [_BASE]
+    parts = [base]
     if can_recurse:
         parts.append(_RECURSIVE)
         parts.append(_batching_for("rlm", "gather_rlm"))

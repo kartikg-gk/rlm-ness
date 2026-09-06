@@ -8,6 +8,7 @@ import queue
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -88,6 +89,19 @@ class ProtocolRuntime:
         self.timeout = timeout
         self.bridges = dict(bridges)
         self._closed = False
+        # Bridges run off the receive loop so several can be outstanding at
+        # once. Serving them inline meant the loop was busy inside the first
+        # call when the second arrived, which made a concurrent fan-out
+        # impossible however the cell was written. One pool per runtime, so a
+        # child's bridges never queue behind its parent's.
+        self._bridge_workers = ThreadPoolExecutor(
+            max_workers=32, thread_name_prefix="bridge"
+        )
+        self._writing = threading.Lock()
+        # How many sub-agent calls are running inside this runtime's current
+        # cell. While any is, the cell is waiting rather than hung.
+        self._bridges_in_flight = 0
+        self._bridge_count_lock = threading.Lock()
 
         # Tools travel as source and are defined inside the namespace, so a
         # call to one never reaches back across this boundary.
@@ -112,20 +126,38 @@ class ProtocolRuntime:
         return getattr(self.channel, "process", None)
 
     def _write(self, message):
-        self.channel.send(message)
+        # Bridge replies come from pool threads, so two can be ready at once.
+        with self._writing:
+            self.channel.send(message)
 
     def _receive(self):
-        try:
-            line = self.channel.inbox.get(timeout=self.timeout)
-        except queue.Empty:
-            self._kill()
-            raise CellTimeout(f"no response within {self.timeout}s")
-        if line is None:
-            raise RuntimeGone("runtime exited")
-        return line if isinstance(line, dict) else json.loads(line)
+        while True:
+            try:
+                line = self.channel.inbox.get(timeout=self.timeout)
+            except queue.Empty:
+                # A cell that has handed work to a sub-agent is not hung, it is
+                # waiting — and a sub-agent's whole run happens inside its
+                # parent's cell, which takes as long as a run takes. Timing the
+                # parent out here killed the tree the moment delegation started
+                # working. The run as a whole is still bounded, by the
+                # allowance's wall clock and by each child's own limits.
+                if self._outstanding_bridges():
+                    continue
+                self._kill()
+                raise CellTimeout(f"no response within {self.timeout}s")
+            if line is None:
+                raise RuntimeGone("runtime exited")
+            return line if isinstance(line, dict) else json.loads(line)
+
+    def _outstanding_bridges(self) -> int:
+        with self._bridge_count_lock:
+            return self._bridges_in_flight
 
     def _kill(self):
         self._closed = True
+        # Not waited on: a bridge in flight is usually blocked on a model call,
+        # and the caller killing this runtime is not obliged to sit through it.
+        self._bridge_workers.shutdown(wait=False)
         self.channel.kill()
 
     def _serve_bridge(self, message) -> None:
@@ -140,7 +172,30 @@ class ProtocolRuntime:
         except Exception as error:
             self._reply(call_id, False, error=f"{type(error).__name__}: {error}")
             return
+        finally:
+            with self._bridge_count_lock:
+                self._bridges_in_flight -= 1
         self._reply(call_id, True, value=value)
+
+    def _serve_bridge_async(self, message) -> None:
+        """Start a bridge without waiting for it.
+
+        A runtime that has been closed under us would raise from the pool with
+        nobody to catch it, so the shut case is answered on the spot.
+        """
+        if self._closed:
+            self._reply(message.get("_id"), False, error="the runtime is closed")
+            return
+        # Counted before the work is queued, so the receive loop never sees a
+        # gap where the call is neither in flight nor finished.
+        with self._bridge_count_lock:
+            self._bridges_in_flight += 1
+        try:
+            self._bridge_workers.submit(self._serve_bridge, message)
+        except BaseException:
+            with self._bridge_count_lock:
+                self._bridges_in_flight -= 1
+            raise
 
     def _reply(self, call_id, ok: bool, *, value=None, error=None) -> None:
         message = {"op": "bridge_result", "ok": ok, "_id": call_id}
@@ -148,7 +203,13 @@ class ProtocolRuntime:
             message["value"] = value
         else:
             message["error"] = error
-        self._write(message)
+        try:
+            self._write(message)
+        except Exception:
+            # The runtime went away while this call was being served. There is
+            # nobody left to tell, and raising here would only strand the
+            # exception in a pool thread.
+            pass
 
     def execute(self, code: str) -> CellOutcome:
         self._write({"op": "exec", "code": code})
@@ -163,13 +224,11 @@ class ProtocolRuntime:
                     error=message.get("error"),
                 )
             if operation == "bridge":
-                # Served inline, not on a thread. The guest waits for each
-                # reply before sending the next, so it can never have two
-                # calls outstanding and there is no concurrency here to win —
-                # only the hazard of replies arriving in an order the guest
-                # does not expect. Parallel helper work goes through the
-                # gather bridges, which cross in a single call.
-                self._serve_bridge(message)
+                # Handed to the pool rather than run here: the guest can have
+                # several calls outstanding, and the receive loop has to stay
+                # free to collect the rest of them. Replies carry the call id,
+                # so they may return in any order.
+                self._serve_bridge_async(message)
 
     def snapshot(self) -> list[dict]:
         """What is bound in the cell's namespace, as plain data.
@@ -187,7 +246,7 @@ class ProtocolRuntime:
                 if message.get("op") == "namespace":
                     return message.get("variables", [])
                 if message.get("op") == "bridge":
-                    self._serve_bridge(message)
+                    self._serve_bridge_async(message)
         except (RuntimeGone, CellTimeout):
             # A snapshot is for looking at a run, never part of running one.
             return []
@@ -196,6 +255,7 @@ class ProtocolRuntime:
         if self._closed:
             return
         self._closed = True
+        self._bridge_workers.shutdown(wait=False)
         self.channel.shutdown()
 
 
