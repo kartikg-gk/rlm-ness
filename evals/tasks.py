@@ -17,6 +17,7 @@ import dataclasses
 import json
 import pathlib
 import re
+import shutil
 import urllib.request
 import zipfile
 from typing import Any, Callable
@@ -36,17 +37,71 @@ class Task:
     score: Callable[[Any], float]
     """Returns 0.0 to 1.0. A task is 'solved' at or above its threshold."""
     threshold: float = 1.0
+    #: How much of a step's output this task needs to see, when the default
+    #: is not enough. A task whose useful output is longer than the ceiling
+    #: shows the agent only the tail of what it printed, and an agent that
+    #: cannot see what it printed prints it again — which is indistinguishable
+    #: from a model that cannot make up its mind. Left None to take the
+    #: configured default.
+    truncate_len: int | None = None
+
+
+def with_question_inside(task: Task, where: str = "top") -> Task:
+    """The same task, with its question folded into PROMPT.
+
+    Two shapes reach a run. The question can arrive beside the data, which is
+    what this harness does everywhere else, or buried in it, which is what
+    happens whenever a caller has one string and hands the whole of it over.
+    Only the first was ever exercised here, so the path most callers actually
+    take was the one never measured.
+
+    It goes at one end or the other because the opening shows the head and the
+    tail of PROMPT and nothing in between: a question in the middle is one the
+    agent has to go looking for before it can start.
+    """
+    if where not in ("top", "bottom"):
+        raise ValueError("where must be 'top' or 'bottom'")
+    body = str(task.prompt)
+    gap = "\n\n"
+    joined = (
+        task.instruction + gap + body
+        if where == "top"
+        else body + gap + task.instruction
+    )
+    return dataclasses.replace(
+        task,
+        name=f"{task.name}-inline-{where}",
+        prompt=joined,
+        instruction="Answer the question that PROMPT itself asks.",
+    )
 
 
 # --------------------------------------------------------------------------
 # Sanity tier — generated, cheap, non-differentiating by construction
 # --------------------------------------------------------------------------
 
+# Every document hedges, in the same words the question uses, and only one of
+# them hedges in the way the question asks about. A search for "weaken",
+# "overturn", "assumption" or "check" therefore returns all of them, which is
+# the point: the distinguishing fact is what the sentence claims, not which
+# words it is built from. An earlier version left "weaken" in the marker alone
+# and a model solved the whole thing with `if "weaken" in doc`.
 _FILLER = [
     "The evidence assembled here is consistent across the three surveys. ",
-    "Our assumption that the interval was uniform is supported by the notes. ",
-    "Some uncertainty attaches to the earliest readings, but the effect is small. ",
+    "Our assumption that the interval was uniform is supported by the notes, "
+    "and were it wrong the estimate would weaken somewhat without changing "
+    "which way it points. ",
+    "Some uncertainty attaches to the earliest readings, but the effect is "
+    "small and could not overturn the ordering. ",
     "The conclusion was checked against an independent series and they agree. ",
+    "There is an assumption here we could not check directly, though the "
+    "margin it could move is narrow. ",
+    "Nothing in the record would reverse the direction of the result, even "
+    "taking the least favourable reading of the gauge. ",
+    "A reading taken at the wrong hour would merely blur the picture; it "
+    "would not invert it. ",
+    "Were the gauge misread throughout, the finding would be weakened and "
+    "not overturned, since the ordering does not rest on it. ",
 ]
 
 _HEDGE = (
@@ -196,10 +251,15 @@ def _benchmark_archive() -> pathlib.Path:
         request = urllib.request.Request(
             LONGBENCH_URL, headers={"User-Agent": "rlm-ness-evals"}
         )
-        with urllib.request.urlopen(request) as response:
-            partial = archive.with_suffix(".part")
-            partial.write_bytes(response.read())
-            partial.replace(archive)
+        # Copied through in blocks rather than read whole: it is a hundred
+        # megabytes, and it arrives while a machine is about to spend the rest
+        # of its memory on the run this is fetching data for. It lands under a
+        # partial name so an interrupted download is never mistaken for a
+        # cached one.
+        partial = archive.with_suffix(".part")
+        with urllib.request.urlopen(request) as response, partial.open("wb") as handle:
+            shutil.copyfileobj(response, handle, 1 << 20)
+        partial.replace(archive)
     return archive
 
 

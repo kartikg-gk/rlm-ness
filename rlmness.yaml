@@ -8,7 +8,12 @@ max_steps: 20
 truncate_len: 2000
 timeout: 120
 max_depth: 3
-max_calls: 400
+# A backstop, not the guard meant to bite: max_cost stops an ordinary run,
+# and this catches providers that report no price, where cost never fires.
+# It sits above the cost ceiling deliberately — at measured prices $1.00 is
+# roughly 500-650 calls, and a lower count here stops runs whose budget is
+# still unspent.
+max_calls: 2000
 max_cost: 1.0
 max_concurrent: 16
 max_live: 32

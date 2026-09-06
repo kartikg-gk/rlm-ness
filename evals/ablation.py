@@ -19,6 +19,7 @@ import argparse
 import dataclasses
 import re
 import statistics
+import sys
 import time
 
 from rlmness.providers import make_client
@@ -27,7 +28,7 @@ from rlmness.config import Config
 from rlmness.engine import solve
 from rlmness.runtime import SubprocessRuntime
 
-from .tasks import BENCHMARK, Task, resolve
+from .tasks import BENCHMARK, Task, resolve, with_question_inside
 
 
 @dataclasses.dataclass
@@ -75,17 +76,27 @@ def _watching(backend, flags):
 
     class Watched:
         def complete(self, messages, *, model):
-            text, usage = backend.complete(messages, model=model)
+            # Passed through whole rather than unpacked: a backend may report
+            # the model's reasoning as a third item, and a wrapper that only
+            # knows about two would quietly drop it on its way to the trace.
+            answer = backend.complete(messages, model=model)
+            text = answer[0]
             if SPAWNS.search(text):
                 flags["spawned"] = True
             if HELPERS.search(text):
                 flags["helped"] = True
-            return text, usage
+            return answer
 
     return Watched()
 
 
 def _once(task: Task, config: Config, provider: str) -> Outcome:
+    # A task that says how much output it needs gets it. The default suits
+    # most, and a task whose useful output runs longer would otherwise be
+    # shown only its tail -- which reads to the agent as though the work did
+    # not happen, and it runs it again.
+    if task.truncate_len is not None:
+        config = dataclasses.replace(config, truncate_len=task.truncate_len)
     allowance = Allowance.from_config(config)
     flags = {"spawned": False, "helped": False}
     backend = _watching(
@@ -112,7 +123,7 @@ def _once(task: Task, config: Config, provider: str) -> Outcome:
         )
         score, failure = task.score(result.output), None
     except Exception as error:
-        score, failure = 0.0, type(error).__name__
+        score, failure = 0.0, _failure_label(error)
 
     # A root agent spends one call per step. Anything above that was spent by
     # a helper, whatever the reply happened to look like — arithmetic the
@@ -130,18 +141,44 @@ def _once(task: Task, config: Config, provider: str) -> Outcome:
     )
 
 
+def _failure_label(error: Exception) -> str:
+    """Say enough about a failure to tell it apart from a result.
+
+    A bare class name reads the same whether the run answered badly or never
+    reached the model at all. A spent key comes back as a refusal with a
+    status on it, and reported as just its type it sits in the table next to
+    real runs and gets counted as one.
+    """
+    message = str(error).strip().splitlines()
+    detail = message[0][:120] if message else ""
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+
+
 def _row(label: str, outcomes: list[Outcome]) -> str:
-    steps = [outcome.steps for outcome in outcomes]
+    """Average over the runs that happened, and count the ones that did not.
+
+    A run that failed has no steps and no delegation to report. Averaged in,
+    its zeros are indistinguishable from a run that went all the way and
+    chose not to delegate — which is the difference the whole table exists
+    to show.
+    """
+    done = [outcome for outcome in outcomes if not outcome.failure]
+    if not done:
+        return f"  {label:<4} nothing completed ({len(outcomes)} failed)"
+    steps = [outcome.steps for outcome in done]
     spread = statistics.stdev(steps) if len(steps) > 1 else 0.0
-    return (
-        f"  {label:<4} solved {sum(o.solved for o in outcomes)}/{len(outcomes)}"
-        f"  score {statistics.mean(o.score for o in outcomes):.2f}"
-        f"  delegated {sum(o.delegated for o in outcomes)}/{len(outcomes)}"
-        f"  helped {sum(o.helped for o in outcomes)}/{len(outcomes)}"
+    row = (
+        f"  {label:<4} solved {sum(o.solved for o in done)}/{len(done)}"
+        f"  score {statistics.mean(o.score for o in done):.2f}"
+        f"  delegated {sum(o.delegated for o in done)}/{len(done)}"
+        f"  helped {sum(o.helped for o in done)}/{len(done)}"
         f"  steps {statistics.mean(steps):.1f}±{spread:.1f}"
-        f"  calls {statistics.mean(o.calls for o in outcomes):.1f}"
-        f"  {statistics.mean(o.seconds for o in outcomes):.1f}s"
+        f"  calls {statistics.mean(o.calls for o in done):.1f}"
+        f"  {statistics.mean(o.seconds for o in done):.1f}s"
     )
+    if len(done) < len(outcomes):
+        row += f"  ({len(outcomes) - len(done)} failed)"
+    return row
 
 
 def main() -> int:
@@ -155,6 +192,15 @@ def main() -> int:
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--truncate-len", type=int, default=2000)
     parser.add_argument("--max-depth", type=int, default=3)
+    parser.add_argument(
+        "--question-inside",
+        choices=("top", "bottom"),
+        help=(
+            "fold each task's question into PROMPT at one end, the way a "
+            "caller with a single string does, instead of passing it "
+            "alongside"
+        ),
+    )
     arguments = parser.parse_args()
 
     _defaults = Config(primary_agent=arguments.model)
@@ -176,7 +222,16 @@ def main() -> int:
     if not hasattr(base, arguments.setting):
         raise SystemExit(f"no such setting: {arguments.setting}")
 
+    # A run takes minutes per task and prints as it goes. Redirected to a
+    # file, the block buffer holds all of that until the process ends, so a
+    # run that is working looks exactly like one that has hung.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(line_buffering=True)
+
     tasks = resolve(arguments.tasks, arguments.num_samples)
+    if arguments.question_inside:
+        tasks = [with_question_inside(t, arguments.question_inside) for t in tasks]
     print(f"ablating {arguments.setting} on {arguments.provider}/{arguments.model}")
     print(f"{len(tasks)} task(s) x {arguments.repeats} repeats x 2 arms\n")
 
