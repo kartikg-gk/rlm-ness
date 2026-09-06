@@ -4,8 +4,30 @@ from __future__ import annotations
 
 PREVIEW = 500
 
+_ALONE_FRAME = """\
+You answer questions about data you cannot see all at once."""
+
+# The third rung of the method ladder, and the reason there is a ladder at all.
+_THIRD_RUNG = """ Something too big for either is
+what the helpers below are for: hand it over rather than working through it a
+window at a time."""
+
+_WHEN_STUCK_RECURSIVE = """ When a step leaves you
+no better off than the one before it, the fastest thing left is usually to
+hand the piece to a sub-agent rather than search it again from a new angle."""
+
+_WHEN_STUCK_ALONE = """ If a real attempt has
+left you stuck, say what you found and that you could not settle it, rather
+than spending more steps circling it."""
+
+_RECURSIVE_FRAME = """\
+You answer questions about data you cannot see all at once, working in a
+namespace that can hand pieces of it to other agents like you. Handing work
+out is the ordinary way of getting something done here, not a last resort for
+when you are stuck."""
+
 _BASE = """\
-You answer questions about data you cannot see all at once.
+{frame}
 
 The data is bound as PROMPT inside a persistent Python namespace. You never
 receive it as text. To learn anything about it, you write code that inspects it
@@ -37,12 +59,10 @@ Match the method to what you are holding. Something short enough to print, you
 read. Something with structure — records, sections, a delimiter — you take
 apart with code, because code sees all of it where you see only the tail.
 Printing piece after piece is neither of those, and it is the one approach that
-cannot work here.
+cannot work here.{third_rung}
 
 Someone is waiting through every step you take, so prefer the method that
-finishes to the one that explores. If a real attempt has left you stuck, say
-what you found and that you could not settle it, rather than spending more
-steps circling it.
+finishes to the one that explores.{when_stuck}
 
 A turn costs a model call whether the block runs one line or twenty, so do
 not spend one on a single probe. Work out what the next decision needs and
@@ -55,7 +75,7 @@ and it will stand even if every search in that block came back empty. There
 are more turns than this one. Look in this block, read what it printed, then
 answer in the next."""
 
-_RECURSIVE = """\
+_RECURSIVE = """
 
 Two helpers hand a piece of the work to a sub-agent. Both are awaited. Use
 them as much as you can: a sub-agent gets its own namespace and its own
@@ -91,12 +111,20 @@ Read what comes back before building on it. A sub-agent can misread its slice
 or answer a question next to the one you asked, and an answer taken on trust
 becomes an answer you report.
 
-The shape that works on a long PROMPT: cut it into pieces, ask the same
-question of every piece at once, then decide from the answers.
+The first move on a long PROMPT, before any searching: cut it into a handful
+of big consecutive pieces, ask every piece the same question at once, and
+decide from what comes back.
 
     pieces = [PROMPT[i:i + 20000] for i in range(0, len(PROMPT), 20000)]
     found = await gather_rlm(pieces, instruction="Does this name a river? Quote it, or say NONE.")
     FINAL([f for f in found if "NONE" not in str(f)])
+
+You do not need to know where the answer is to do this, and waiting until you
+do is the mistake. Searching only finds a passage that shares words with your
+question, and the passage that answers a question usually does not — so a
+search that keeps almost working can absorb every step you have while the
+pieces sit unread. Seven pieces of twenty thousand characters is one call and
+covers all of it.
 
 When what comes back is itself more than you can read, the last step is a
 helper too: hand it the collected answers and ask for the single answer. A run
@@ -104,12 +132,19 @@ that ends by returning the pieces has stopped one step short of the question.
 
 A sub-agent reads far more than you can print, so a piece does not have to be
 small to be worth handing over. Ten sections in one call is a reasonable thing
-to do and costs less than ten calls.
+to do and costs less than ten calls. If the whole of PROMPT fits in one
+sub-agent, sending the whole of it with the question is a fair first move and
+often the shortest one — a helper that can read it all does not have your
+problem, and asking it costs one call against the ten a search will spend.
 
-That reach is not a reason to send everything. Narrow with code first — to the
-records, the section, the range that the question is actually about — and send
-that. Handing over the whole of PROMPT unchanged divides nothing: it passes the
-same problem down a level and pays a full run for it.
+The judgement to make is how many pieces, not whether to send much. Cut where
+it helps: several pieces asked at once come back in the time of the slowest,
+and each answer is about a part you can then name. One piece is right when the
+question needs the whole to answer it; several are right when the answer lives
+in one place and you do not know which.
+
+What does not work is sending a piece with no question attached. That hands
+down the problem instead of the work.
 """
 
 _BATCHING = """
@@ -220,11 +255,23 @@ def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False) -> 
     by writing a fetch and reading the failure, which costs a turn to learn
     something the runtime knew all along.
     """
+    # Recursion is described in the frame rather than appended after it. An
+    # agent told how the environment works and then, separately, that helpers
+    # also exist, reads the helpers as an extra — and a model reading that
+    # works alone and delegates only when cornered. The three slots put the
+    # same fact where the work is decided: what this place is, what to do
+    # with something too big to read, and where to turn when a step gains
+    # nothing.
+    base = _BASE.format(
+        frame=_RECURSIVE_FRAME if can_recurse else _ALONE_FRAME,
+        third_rung=_THIRD_RUNG if can_recurse else "",
+        when_stuck=_WHEN_STUCK_RECURSIVE if can_recurse else _WHEN_STUCK_ALONE,
+    )
     # One kind of helper is described, and it is a sub-agent. A flat call
     # cannot cut or search the piece it is handed, which is the whole
     # point of handing it over, so offering both only invites the weaker
     # one to be chosen on price.
-    parts = [_BASE]
+    parts = [base]
     if can_recurse:
         parts.append(_RECURSIVE)
         parts.append(_batching_for("rlm", "gather_rlm"))
