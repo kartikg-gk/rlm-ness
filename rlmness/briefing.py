@@ -28,6 +28,11 @@ Each turn:
 When you have the answer, call FINAL(answer) in a block. That ends the run and
 returns the value. Call it with the answer itself, not a description of it.
 
+FINAL takes whatever you pass it, so when the answer is text that is already
+in the namespace, pass the thing itself — FINAL(passage) — rather than
+retyping it. Retyping is where wording drifts, and a quote that has drifted is
+no longer a quote.
+
 Match the method to what you are holding. Something short enough to print, you
 read. Something with structure — records, sections, a delimiter — you take
 apart with code, because code sees all of it where you see only the tail.
