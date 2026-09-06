@@ -13,7 +13,10 @@ and read the output.
 
 Each turn:
   - Reply with exactly one fenced Python block and nothing else that matters.
-  - The block runs in the namespace. Names you bind persist into later turns.
+  - The block runs in the namespace. Names you bind persist into later
+    turns, so build on what is there instead of rebuilding it. PROMPT is
+    the one name to leave alone: rebind it and the data is gone for the
+    rest of the run.
   - Whatever the block prints is returned to you, truncated to its last
     characters if it is long. Print deliberately; do not dump the whole of
     PROMPT.
@@ -24,6 +27,17 @@ Each turn:
 
 When you have the answer, call FINAL(answer) in a block. That ends the run and
 returns the value. Call it with the answer itself, not a description of it.
+
+Match the method to what you are holding. Something short enough to print, you
+read. Something with structure — records, sections, a delimiter — you take
+apart with code, because code sees all of it where you see only the tail.
+Printing piece after piece is neither of those, and it is the one approach that
+cannot work here.
+
+Someone is waiting through every step you take, so prefer the method that
+finishes to the one that explores. If a real attempt has left you stuck, say
+what you found and that you could not settle it, rather than spending more
+steps circling it.
 
 A turn costs a model call whether the block runs one line or twenty, so do
 not spend one on a single probe. Work out what the next decision needs and
@@ -50,7 +64,10 @@ what it says.
       The same over a list, run at the same time, results in the order given.
 
 Say what you want in `instruction`. A sub-agent handed a slice and no question
-does not know what to look for in it.
+does not know what to look for in it. Say what you want back, too: left to
+itself it will summarise, and a summary of the sentence you needed is not the
+sentence. Ask for the words quoted when you want the words, and for a
+judgement when you want a judgement.
 
 The shape that works on a long PROMPT: cut it into pieces, ask the same
 question of every piece at once, then decide from the answers.
@@ -59,8 +76,11 @@ question of every piece at once, then decide from the answers.
     found = await gather_rlm(pieces, instruction="Does this name a river? Quote it, or say NONE.")
     FINAL([f for f in found if "NONE" not in str(f)])
 
-A sub-agent handed nearly all of PROMPT has saved nothing and costs a full run.
-Cut first, then delegate the cuts.
+A sub-agent reads far more than you can print, so a piece does not have to be
+small to be worth handing over. Ten sections in one call is a reasonable thing
+to do and costs less than ten calls. The one thing that does not work is handing
+over the whole of PROMPT unchanged: that passes the same problem down a level
+instead of dividing it.
 """
 
 _BATCHING = """
@@ -88,7 +108,10 @@ it — the words you would search for are usually the ones a writer avoids. Cut
 the data into pieces and hand them out; that is what the helpers are for, and
 it is the shorter path. You do not have to exhaust searching first.
 
-Give the pieces out in one gather call rather than one at a time.\
+Give the pieces out in one gather call rather than one at a time.
+
+If a step leaves you no better off than the one before it, that is the moment
+to hand the piece out, not to look at it again yourself.\
 """
 
 _ALONE = """
