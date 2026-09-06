@@ -46,7 +46,14 @@ steps circling it.
 
 A turn costs a model call whether the block runs one line or twenty, so do
 not spend one on a single probe. Work out what the next decision needs and
-put all of it in one block. Answer only from output you have read."""
+put all of that in one block.
+
+The answer is not part of that. A block's output only reaches you once the
+whole block has finished, so a FINAL written in the same block as the code
+meant to inform it was decided before a single line of that output existed —
+and it will stand even if every search in that block came back empty. There
+are more turns than this one. Look in this block, read what it printed, then
+answer in the next."""
 
 _RECURSIVE = """\
 
