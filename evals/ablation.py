@@ -28,7 +28,7 @@ from rlmness.config import Config
 from rlmness.engine import solve
 from rlmness.runtime import SubprocessRuntime
 
-from .tasks import BENCHMARK, Task, resolve
+from .tasks import BENCHMARK, Task, resolve, with_question_inside
 
 
 @dataclasses.dataclass
@@ -91,6 +91,12 @@ def _watching(backend, flags):
 
 
 def _once(task: Task, config: Config, provider: str) -> Outcome:
+    # A task that says how much output it needs gets it. The default suits
+    # most, and a task whose useful output runs longer would otherwise be
+    # shown only its tail -- which reads to the agent as though the work did
+    # not happen, and it runs it again.
+    if task.truncate_len is not None:
+        config = dataclasses.replace(config, truncate_len=task.truncate_len)
     allowance = Allowance.from_config(config)
     flags = {"spawned": False, "helped": False}
     backend = _watching(
@@ -186,6 +192,15 @@ def main() -> int:
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--truncate-len", type=int, default=2000)
     parser.add_argument("--max-depth", type=int, default=3)
+    parser.add_argument(
+        "--question-inside",
+        choices=("top", "bottom"),
+        help=(
+            "fold each task's question into PROMPT at one end, the way a "
+            "caller with a single string does, instead of passing it "
+            "alongside"
+        ),
+    )
     arguments = parser.parse_args()
 
     _defaults = Config(primary_agent=arguments.model)
@@ -215,6 +230,8 @@ def main() -> int:
         reconfigure(line_buffering=True)
 
     tasks = resolve(arguments.tasks, arguments.num_samples)
+    if arguments.question_inside:
+        tasks = [with_question_inside(t, arguments.question_inside) for t in tasks]
     print(f"ablating {arguments.setting} on {arguments.provider}/{arguments.model}")
     print(f"{len(tasks)} task(s) x {arguments.repeats} repeats x 2 arms\n")
 

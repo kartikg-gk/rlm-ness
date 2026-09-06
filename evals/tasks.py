@@ -37,6 +37,43 @@ class Task:
     score: Callable[[Any], float]
     """Returns 0.0 to 1.0. A task is 'solved' at or above its threshold."""
     threshold: float = 1.0
+    #: How much of a step's output this task needs to see, when the default
+    #: is not enough. A task whose useful output is longer than the ceiling
+    #: shows the agent only the tail of what it printed, and an agent that
+    #: cannot see what it printed prints it again — which is indistinguishable
+    #: from a model that cannot make up its mind. Left None to take the
+    #: configured default.
+    truncate_len: int | None = None
+
+
+def with_question_inside(task: Task, where: str = "top") -> Task:
+    """The same task, with its question folded into PROMPT.
+
+    Two shapes reach a run. The question can arrive beside the data, which is
+    what this harness does everywhere else, or buried in it, which is what
+    happens whenever a caller has one string and hands the whole of it over.
+    Only the first was ever exercised here, so the path most callers actually
+    take was the one never measured.
+
+    It goes at one end or the other because the opening shows the head and the
+    tail of PROMPT and nothing in between: a question in the middle is one the
+    agent has to go looking for before it can start.
+    """
+    if where not in ("top", "bottom"):
+        raise ValueError("where must be 'top' or 'bottom'")
+    body = str(task.prompt)
+    gap = "\n\n"
+    joined = (
+        task.instruction + gap + body
+        if where == "top"
+        else body + gap + task.instruction
+    )
+    return dataclasses.replace(
+        task,
+        name=f"{task.name}-inline-{where}",
+        prompt=joined,
+        instruction="Answer the question that PROMPT itself asks.",
+    )
 
 
 # --------------------------------------------------------------------------
