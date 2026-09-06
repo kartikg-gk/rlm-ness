@@ -4,7 +4,9 @@ import ast
 import asyncio
 import io
 import json
+import queue
 import sys
+import threading
 import traceback
 from contextlib import redirect_stdout
 
@@ -12,9 +14,16 @@ _OUT = sys.__stdout__
 _IN = sys.__stdin__
 
 
+_WRITING = threading.Lock()
+
+
 def _write(obj):
-    _OUT.write(json.dumps(obj, default=str) + "\n")
-    _OUT.flush()
+    # Several helper calls can be in flight at once, each writing its own
+    # request. The lock keeps two of them from interleaving into one line
+    # that neither side can parse.
+    with _WRITING:
+        _OUT.write(json.dumps(obj, default=str) + '\n')
+        _OUT.flush()
 
 
 def _read():
@@ -22,6 +31,62 @@ def _read():
     if not line:
         raise EOFError("host closed the connection")
     return json.loads(line)
+
+
+# Replies are sorted by a reader thread rather than by whoever happens to be
+# waiting. A call that read the wire itself would consume the reply meant for
+# another call still awaiting, which is what made a second concurrent call
+# impossible.
+_COMMANDS = queue.Queue()
+_PENDING = {}
+_PENDING_LOCK = threading.Lock()
+_LOOP = None
+
+
+def _resolve(future, ok, payload):
+    if future.done():
+        return
+    if ok:
+        future.set_result(payload)
+    else:
+        future.set_exception(RuntimeError(payload))
+
+
+def _settle(future, ok, payload):
+    """Finish a call from the reader thread, on the loop that is awaiting it."""
+    loop = _LOOP
+    if loop is None:
+        return
+    loop.call_soon_threadsafe(_resolve, future, ok, payload)
+
+
+def _pump():
+    """Read the wire forever, routing each line to whoever wants it."""
+    while True:
+        try:
+            message = _read()
+        except (EOFError, ValueError):
+            break
+        if message.get("op") == "bridge_result":
+            with _PENDING_LOCK:
+                future = _PENDING.pop(message.get("_id"), None)
+            if future is not None:
+                _settle(
+                    future,
+                    bool(message.get("ok")),
+                    message.get("value") if message.get("ok")
+                    else message.get("error", "the call failed on the host"),
+                )
+        else:
+            _COMMANDS.put(message)
+    # The host is gone. Nothing more will arrive, so anything still waiting
+    # has to be told rather than left hanging until the cell times out.
+    _COMMANDS.put(None)
+    with _PENDING_LOCK:
+        stranded = list(_PENDING.values())
+        _PENDING.clear()
+    for future in stranded:
+        _settle(future, False, "host closed the connection")
 
 
 class _Answered(Exception):
@@ -34,25 +99,37 @@ _next_id = 0
 
 
 def _make_proxy(name):
+    """A helper that really yields while the host works on it.
+
+    The body used to write its request and then spin on the wire until its own
+    reply came back. That made the `async def` a promise the call could not
+    keep: awaiting it never returned to the event loop, so a second call could
+    not start until the first had finished, and gathering several of them ran
+    them one after another. Registering a future and awaiting it lets the loop
+    get on with the rest.
+    """
     async def proxy(*args, **kwargs):
         global _next_id
         _next_id += 1
-        _write(
-            {
-                "op": "bridge",
-                "name": name,
-                "args": list(args),
-                "kwargs": kwargs,
-                "_id": _next_id,
-            }
-        )
         call = _next_id
-        reply = _read()
-        while reply.get("op") != "bridge_result" or reply.get("_id") != call:
-            reply = _read()
-        if not reply.get("ok"):
-            raise RuntimeError(reply.get("error", f"{name}() failed on the host"))
-        return reply.get("value")
+        future = asyncio.get_running_loop().create_future()
+        with _PENDING_LOCK:
+            _PENDING[call] = future
+        try:
+            _write(
+                {
+                    "op": "bridge",
+                    "name": name,
+                    "args": list(args),
+                    "kwargs": kwargs,
+                    "_id": call,
+                }
+            )
+        except BaseException:
+            with _PENDING_LOCK:
+                _PENDING.pop(call, None)
+            raise
+        return await future
 
     return proxy
 
@@ -94,6 +171,21 @@ def _checked(name, function):
     return tool
 
 
+async def _drive(pending):
+    """Run the cell's coroutine, telling the reader thread where to deliver.
+
+    A fresh event loop is made for every cell, so the thread that settles
+    replies has to be told which one is current rather than capturing one at
+    import time.
+    """
+    global _LOOP
+    _LOOP = asyncio.get_running_loop()
+    try:
+        return await pending
+    finally:
+        _LOOP = None
+
+
 def _exec_cell(code, namespace):
     buffer = io.StringIO()
     final, has_final, error = None, False, None
@@ -102,7 +194,7 @@ def _exec_cell(code, namespace):
         with redirect_stdout(buffer):
             pending = eval(compiled, namespace)
             if pending is not None:
-                asyncio.run(pending)
+                asyncio.run(_drive(pending))
     except _Answered as signal:
         has_final, final = True, signal.value
     except BaseException:
@@ -136,10 +228,13 @@ def main():
     summariser = {}
     if init.get("summariser"):
         exec(init["summariser"], summariser)
+    threading.Thread(target=_pump, daemon=True).start()
     _write({"op": "ready"})
 
     while True:
-        command = _read()
+        command = _COMMANDS.get()
+        if command is None:
+            return
         operation = command.get("op")
         if operation == "shutdown":
             return
