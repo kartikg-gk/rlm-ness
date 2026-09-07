@@ -230,6 +230,7 @@ def solve(
     tools: Mapping[str, Callable] | None = None,
     run_id: str | None = None,
     parent_run_id: str | None = None,
+    session=None,
 ) -> Answer:
     """Answer a question about `prompt`, which the model never sees whole.
 
@@ -414,7 +415,15 @@ def solve(
         )
         raise
 
-    runtime = runtime_factory(prompt, bridges, config.timeout, prepared)
+    # A session belongs to the run that was asked the question. Children get
+    # their own empty namespace: a sub-agent is given a piece and a question,
+    # and inheriting the parent's working variables would hand it the parent's
+    # half-finished thinking as though it were data.
+    carried = session.state_for_guest() if (session is not None and depth == 0) else None
+    # Passed as a keyword and only when there is one, so a runtime or a test
+    # double that predates sessions keeps its old signature.
+    extra = {"session": carried} if carried is not None else {}
+    runtime = runtime_factory(prompt, bridges, config.timeout, prepared, **extra)
 
     def _snapshot(step: int) -> None:
         """Ask the runtime what is bound, and only if someone is watching.
@@ -432,6 +441,25 @@ def solve(
         except Exception:
             return
         emit(trace, "namespace_changed", run_id=run_id, step=step, variables=variables)
+
+    _session_preamble = (
+        session.preamble() if (session is not None and depth == 0) else ""
+    )
+
+    def _keep(step_number: int, code_text: str | None, ok: bool) -> None:
+        """Take everything the namespace holds into the session.
+
+        After every step rather than at the end: a run that dies at step nine
+        should not cost the eight steps of work that came before it.
+        """
+        if session is None or depth != 0:
+            return
+        session.absorb(
+            runtime.sweep(code_text),
+            {"question": len(session.answered), "step": step_number,
+             "ok": ok, "code": code_text or ""},
+            getattr(runtime, "restore_failed", set()),
+        )
 
     def _open() -> None:
         """Look at PROMPT once, before the model is asked for anything.
@@ -461,7 +489,7 @@ def solve(
         messages.append(
             {
                 "role": "user",
-                "content": opening_message(
+                "content": (_session_preamble or "") + opening_message(
                     opening, shown, instruction, config.truncate_len,
                     is_child=depth > 0,
                 ),
@@ -549,8 +577,15 @@ def solve(
                     run_id=run_id, parent_run_id=parent_run_id,
                 )
                 emit(trace, "run_completed", run_id=run_id, result=cell.final)
+                _keep(step, code, not cell.error)
+                if session is not None and depth == 0:
+                    session.settled(
+                        instruction or str(prompt), cell.final,
+                        trace=getattr(trace, "path", None), run_id=run_id,
+                    )
                 return Answer(output=cell.final, steps=step, usage=total)
 
+            _keep(step, code, not cell.error)
             labelled = label_output(output, config.truncate_len)
             emit(
                 trace, "output_received",

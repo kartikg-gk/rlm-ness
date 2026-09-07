@@ -235,8 +235,20 @@ def main():
     summariser = {}
     if init.get("summariser"):
         exec(init["summariser"], summariser)
+
+    # Same treatment, and one exception: `commit` is bound across because the
+    # model is meant to call it. The rest stays out here, so a sweep can never
+    # pick up its own machinery and a restored name can never collide with it.
+    session = {}
+    restored = []
+    if init.get("session"):
+        exec(init["session"], session)
+        namespace["commit"] = session["commit"]
+        saved = init.get("restore")
+        if saved:
+            restored = session["restore"](namespace, saved)
     threading.Thread(target=_pump, daemon=True).start()
-    _write({"op": "ready"})
+    _write({"op": "ready", "restore_failed": restored})
 
     while True:
         command = _COMMANDS.get()
@@ -252,6 +264,15 @@ def main():
             except Exception:
                 variables = []
             _write({"op": "namespace", "variables": variables})
+            continue
+        if operation == "sweep":
+            gather = session.get("sweep")
+            try:
+                swept = gather(namespace, command.get("code")) if gather else {}
+            except Exception as failure:
+                swept = {"variables": {}, "functions": {},
+                         "dropped": {"*": f"the sweep failed: {failure}"}}
+            _write({"op": "swept", **swept})
             continue
         if operation != "exec":
             continue
