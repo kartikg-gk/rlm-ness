@@ -168,12 +168,17 @@ class WasmRuntime(ProtocolRuntime):
         timeout: float = 180.0,
         tools=(),
         node: str = "node",
+        session=None,
     ):
         if shutil.which(node) is None:
             raise RuntimeError(f"{node!r} is not on PATH")
         host = _shared_host(node)
-        session = _Session(host, f"s{next(_names)}")
-        super().__init__(session, prompt, bridges, timeout, tools)
+        # Two different things wear this name. `channel` is this sandbox's
+        # slot in the shared host; `session` is the saved namespace a resumed
+        # run brings with it. Naming them apart here because the base class
+        # takes both and confusing them would be silent.
+        channel = _Session(host, f"s{next(_names)}")
+        super().__init__(channel, prompt, bridges, timeout, tools, session)
 
 
 def wasm_available(node: str = "node") -> bool:

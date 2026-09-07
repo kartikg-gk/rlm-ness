@@ -20,6 +20,10 @@ _RUNNER = str(Path(__file__).with_name("cell_runner.py"))
 # makes, and for the same reason: nothing comes back but plain data.
 SUMMARISER = Path(__file__).with_name("namespace.py").read_text(encoding="utf-8")
 
+# Ships the same way and for the same reason: the values are over there, so
+# the packing happens over there and only plain data comes back.
+SESSION = Path(__file__).with_name("session_guest.py").read_text(encoding="utf-8")
+
 
 class CellTimeout(Exception):
     pass
@@ -84,7 +88,7 @@ class ProtocolRuntime:
     as separate from each other as they would be in separate processes.
     """
 
-    def __init__(self, channel, prompt, bridges, timeout, tools=()):
+    def __init__(self, channel, prompt, bridges, timeout, tools=(), session=None):
         self.channel = channel
         self.timeout = timeout
         self.bridges = dict(bridges)
@@ -114,11 +118,19 @@ class ProtocolRuntime:
                     {"name": tool.name, "source": tool.source} for tool in tools
                 ],
                 "summariser": SUMMARISER,
+                # Only when the caller is running a session. A run that is not
+                # pays nothing: no source shipped, no `commit` bound, no sweep.
+                "session": SESSION if session is not None else None,
+                "restore": session,
             }
         )
         ready = self._receive()
         if ready.get("op") != "ready":
             raise RuntimeGone(f"runtime failed to start: {ready!r}")
+        #: Names the saved state held that would not come back. The caller
+        #: keeps them rather than letting a sweep that cannot see them report
+        #: them as deleted.
+        self.restore_failed = set(ready.get("restore_failed") or ())
 
     @property
     def process(self):
@@ -230,6 +242,26 @@ class ProtocolRuntime:
                 # so they may return in any order.
                 self._serve_bridge_async(message)
 
+    def sweep(self, code: str | None = None) -> dict:
+        """Everything in the namespace worth carrying into the next run."""
+        if self._closed:
+            return {}
+        try:
+            self._write({"op": "sweep", "code": code})
+            while True:
+                message = self._receive()
+                if message.get("op") == "swept":
+                    return {
+                        "variables": message.get("variables", {}),
+                        "functions": message.get("functions", {}),
+                        "modules": message.get("modules", {}),
+                        "dropped": message.get("dropped", {}),
+                    }
+                if message.get("op") == "bridge":
+                    self._serve_bridge_async(message)
+        except (RuntimeGone, CellTimeout):
+            return {}
+
     def snapshot(self) -> list[dict]:
         """What is bound in the cell's namespace, as plain data.
 
@@ -274,6 +306,7 @@ class SubprocessRuntime(ProtocolRuntime):
         bridges: Mapping[str, Callable] | Sequence[str] = (),
         timeout: float = 120.0,
         tools=(),
+        session=None,
     ):
         environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
         process = subprocess.Popen(
@@ -286,4 +319,4 @@ class SubprocessRuntime(ProtocolRuntime):
             bufsize=1,
             env=environment,
         )
-        super().__init__(ProcessChannel(process), prompt, bridges, timeout, tools)
+        super().__init__(ProcessChannel(process), prompt, bridges, timeout, tools, session)
