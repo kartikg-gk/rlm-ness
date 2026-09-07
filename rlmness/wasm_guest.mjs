@@ -81,6 +81,38 @@ def _install_summariser(source):
     if source:
         exec(source, _summariser)
 
+# Same treatment as the summariser, and one exception: \`commit\` is bound into
+# the cell's namespace because the model is meant to call it. The rest stays
+# out here, so a sweep can never pick up its own machinery.
+_session = {}
+_session_owned = set()
+
+def _install_session(source, state_json):
+    if not source:
+        return json.dumps([])
+    exec(source, _session)
+    # Everything already here belongs to this guest, not to the model. In a
+    # runtime with a private namespace for its machinery this is empty; here
+    # the machinery lives alongside the cell, so it has to say so.
+    _session_owned.update(globals())
+    globals()["commit"] = _session["commit"]
+    state = json.loads(state_json) if state_json else None
+    if not state:
+        return json.dumps([])
+    return json.dumps(_session["restore"](globals(), state))
+
+def _sweep(code):
+    gather = _session.get("sweep")
+    if not gather:
+        return json.dumps({})
+    try:
+        return json.dumps(gather(globals(), code, _session_owned), default=str)
+    except Exception as failure:
+        return json.dumps(
+            {"variables": {}, "functions": {}, "modules": {},
+             "dropped": {"*": f"the sweep failed: {failure}"}}
+        )
+
 def _snapshot():
     describe = _summariser.get("summarise")
     if not describe:
@@ -156,7 +188,12 @@ async function open(sid, msg) {
   await py.runPythonAsync("_install_tools(_TOOLS_JSON)\n");
   py.globals.set("_SUMMARISER_SRC", msg.summariser ?? "");
   await py.runPythonAsync("_install_summariser(_SUMMARISER_SRC)\n");
-  send({ sid, op: "ready" });
+  py.globals.set("_SESSION_SRC", msg.session ?? "");
+  py.globals.set("_SESSION_STATE", JSON.stringify(msg.restore ?? null));
+  const failedJson = await py.runPythonAsync(
+    "_install_session(_SESSION_SRC, _SESSION_STATE)",
+  );
+  send({ sid, op: "ready", restore_failed: JSON.parse(failedJson) });
 }
 
 async function handle(msg) {
@@ -178,6 +215,12 @@ async function handle(msg) {
     box.py.globals.set("_CELL_SRC", msg.code ?? "");
     const resultJson = await box.py.runPythonAsync("await _exec_cell(_CELL_SRC)");
     send({ sid, op: "result", ...JSON.parse(resultJson) });
+    return;
+  }
+  if (msg.op === "sweep") {
+    box.py.globals.set("_SWEEP_CODE", msg.code ?? "");
+    const sweptJson = await box.py.runPythonAsync("_sweep(_SWEEP_CODE)");
+    send({ sid, op: "swept", ...JSON.parse(sweptJson) });
     return;
   }
   if (msg.op === "snapshot") {

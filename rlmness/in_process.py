@@ -21,6 +21,7 @@ import traceback
 from contextlib import redirect_stdout
 from typing import Any, Callable, Mapping
 
+from . import session_guest
 from .namespace import summarise
 from .runtime import CellOutcome
 
@@ -53,6 +54,7 @@ class InProcessRuntime:
         bridges: Mapping[str, Callable] = (),
         timeout: float | None = None,
         tools=(),
+        session=None,
     ):
         # Kept for a uniform signature. There is no process to interrupt, so a
         # cell that never returns holds this thread; the process-backed
@@ -71,6 +73,12 @@ class InProcessRuntime:
         }
         for name, function in dict(bridges).items():
             self.namespace[name] = _awaitable(function)
+        # Imported rather than shipped as source: there is no boundary to ship
+        # it across here, and the same functions do the same work either way.
+        self.restore_failed = set()
+        if session is not None:
+            self.namespace["commit"] = session_guest.commit
+            self.restore_failed = set(session_guest.restore(self.namespace, session))
         for tool in tools:
             self.namespace[tool.name] = tool.value
             # A stable handle for asserting identity without going through the
@@ -102,6 +110,9 @@ class InProcessRuntime:
             has_final=self._outcome["has_final"],
             error=error,
         )
+
+    def sweep(self, code: str | None = None) -> dict:
+        return session_guest.sweep(self.namespace, code)
 
     def snapshot(self) -> list[dict]:
         """The same summary the other runtimes build, over the same names.

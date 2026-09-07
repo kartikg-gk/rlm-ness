@@ -11,6 +11,7 @@ from .providers import PROVIDERS, MissingApiKey, make_client
 from .config import load_config
 from .engine import RUNTIMES, Answer, solve
 from .journal import Journal
+from .session import Session
 
 
 def _parse(argv):
@@ -21,6 +22,13 @@ def _parse(argv):
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--max-depth", type=int)
     parser.add_argument("--config")
+    parser.add_argument(
+        "--session",
+        help=(
+            "keep this run's namespace and answers in a file, and start from "
+            "them next time the same file is given"
+        ),
+    )
     parser.add_argument(
         "--runtime",
         choices=sorted(RUNTIMES),
@@ -111,14 +119,27 @@ def main(argv=None, *, backend=None) -> int:
         # the same events, never a replacement for the record.
         sink = Broadcast(trace, live)
 
+    book = Session.load(args.session) if args.session else None
+
     def run(text: str) -> Answer:
-        return solve(
-            text,
-            backend,
-            instruction=args.instruction,
-            config=config,
-            trace=sink,
-        )
+        if book is not None:
+            # Written down before the run rather than after it, so a run that
+            # dies leaves a record that it was asked at all. The preamble of
+            # the next run says so, and says its variables may still be here.
+            book.asking = args.instruction or text
+            book.save(args.session)
+        try:
+            return solve(
+                text,
+                backend,
+                instruction=args.instruction,
+                config=config,
+                trace=sink,
+                session=book,
+            )
+        finally:
+            if book is not None:
+                book.save(args.session)
 
     try:
         if interactive:
@@ -151,6 +172,9 @@ def main(argv=None, *, backend=None) -> int:
     print(result.output)
     print(f"steps: {result.steps}  tokens: {result.usage.total_tokens}  cost: {cost}")
     print(f"trace: {trace.path}")
+    if book is not None:
+        print(f"session: {args.session}  ({len(book.answered)} answered, "
+              f"{len(book.variables)} variables kept)")
     return 0
 
 
