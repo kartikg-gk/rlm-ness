@@ -57,6 +57,11 @@ class _State:
     `sources` accumulates across steps: a function defined at step one is
     still live at step five, but only step one's code contains its text.
 
+    `comments` and `notes` are kept apart because they are different claims.
+    A comment is what the model happened to write beside an assignment; a
+    note is what it said when it deliberately kept the value. Merging them
+    would make a passing remark indistinguishable from a stated intent.
+
     `blobs` is a pickle cache. Re-pickling an unchanged corpus on every step
     is the sweep's dominant cost, and a value that cannot be mutated cannot
     have changed while it stayed the same object. The object itself is held,
@@ -66,6 +71,7 @@ class _State:
 
     def __init__(self):
         self.sources = {}
+        self.comments = {}
         self.notes = {}
         self.committed = set()
         self.blobs = {}
@@ -133,7 +139,7 @@ def _read_comments(code):
         comment = by_line.get(getattr(node, "lineno", -1))
         if comment:
             for name in targets:
-                _state.notes.setdefault(name, comment)
+                _state.comments[name] = comment
 
 
 def _pack(name, value):
@@ -206,6 +212,7 @@ def sweep(namespace, code=None, skip=()):
             "pickle_b64": base64.b64encode(blob).decode(),
             "type": type(value).__name__,
             "preview": _preview(value),
+            "comment": _state.comments.get(name),
             "note": _state.notes.get(name),
             "committed": name in _state.committed,
         }

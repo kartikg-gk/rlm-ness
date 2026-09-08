@@ -25,9 +25,27 @@ def _parse(argv):
     parser.add_argument(
         "--session",
         help=(
-            "keep this run's namespace and answers in a file, and start from "
-            "them next time the same file is given"
+            "keep this run's namespace and answers, and start from them next "
+            "time the same target is given: a file holds the state itself, a "
+            "directory holds it under state.json"
         ),
+    )
+    parser.add_argument(
+        "--session-ephemeral",
+        action="store_true",
+        help=(
+            "carry the namespace between questions asked in this process, and "
+            "keep nothing once it exits"
+        ),
+    )
+    parser.add_argument(
+        "--session-id",
+        help="name a session inside --session, so one directory can hold several",
+    )
+    parser.add_argument(
+        "--session-no-code",
+        action="store_true",
+        help="do not show the code of earlier runs to this one",
     )
     parser.add_argument(
         "--runtime",
@@ -119,15 +137,18 @@ def main(argv=None, *, backend=None) -> int:
         # the same events, never a replacement for the record.
         sink = Broadcast(trace, live)
 
-    book = Session.load(args.session) if args.session else None
+    # A session with nowhere to save is one that lasts as long as the process.
+    # Every step still writes itself down; there is simply no file under it.
+    if args.session:
+        book = Session.load(args.session, args.session_id)
+    elif args.session_ephemeral:
+        book = Session()
+    else:
+        book = None
+    if book is not None:
+        book.show_code = not args.session_no_code
 
     def run(text: str) -> Answer:
-        if book is not None:
-            # Written down before the run rather than after it, so a run that
-            # dies leaves a record that it was asked at all. The preamble of
-            # the next run says so, and says its variables may still be here.
-            book.asking = args.instruction or text
-            book.save(args.session)
         try:
             return solve(
                 text,
@@ -138,8 +159,10 @@ def main(argv=None, *, backend=None) -> int:
                 session=book,
             )
         finally:
+            # Every step has already written itself down. This catches the
+            # one case a step cannot: a run that ended without answering.
             if book is not None:
-                book.save(args.session)
+                book.save()
 
     try:
         if interactive:
@@ -173,7 +196,8 @@ def main(argv=None, *, backend=None) -> int:
     print(f"steps: {result.steps}  tokens: {result.usage.total_tokens}  cost: {cost}")
     print(f"trace: {trace.path}")
     if book is not None:
-        print(f"session: {args.session}  ({len(book.answered)} answered, "
+        print(f"session: {book.path or 'kept for this process only'}  "
+              f"({len(book.answered)} answered, "
               f"{len(book.variables)} variables kept)")
     return 0
 
