@@ -79,10 +79,15 @@ class InProcessRuntime:
         # this interpreter, which the process-backed runtimes never do.
         self._session: dict[str, Any] = {}
         exec(_GUEST_SOURCE, self._session)
+        # The caller's names, not the model's. A session must neither restore
+        # over them nor sweep them up as though the model had written them.
+        self._theirs = {tool.name for tool in tools}
         self.restore_failed = set()
         if session is not None:
             self.namespace["commit"] = self._session["commit"]
-            self.restore_failed = set(self._session["restore"](self.namespace, session))
+            self.restore_failed = set(
+                self._session["restore"](self.namespace, session, self._theirs)
+            )
         for tool in tools:
             self.namespace[tool.name] = tool.value
             # A stable handle for asserting identity without going through the
@@ -116,7 +121,7 @@ class InProcessRuntime:
         )
 
     def sweep(self, code: str | None = None) -> dict:
-        return self._session["sweep"](self.namespace, code)
+        return self._session["sweep"](self.namespace, code, self._theirs)
 
     def snapshot(self) -> list[dict]:
         """The same summary the other runtimes build, over the same names.

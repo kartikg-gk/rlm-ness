@@ -142,6 +142,38 @@ def _read_comments(code):
                 _state.comments[name] = comment
 
 
+class _TooBig(Exception):
+    pass
+
+
+class _Capped:
+    """Somewhere to pickle into that gives up once the value is too large.
+
+    Pickling a value in full only to measure it and throw it away is the whole
+    cost of the size limit, and it is paid again on every step for as long as
+    the value stays bound. Stopping at the limit costs the same as keeping a
+    value that fits and nothing extra for one that does not.
+
+    The stop is approximate: the pickler buffers into frames and only writes
+    at frame boundaries, so a value is overshot by up to one frame before it
+    is noticed. Against a five megabyte limit that is a rounding error, and
+    the alternative is pickling the whole thing to be exact about a number
+    nobody reads.
+    """
+
+    def __init__(self, limit):
+        self.limit = limit
+        self.size = 0
+        self.chunks = []
+
+    def write(self, data):
+        self.size += len(data)
+        if self.size > self.limit:
+            raise _TooBig
+        self.chunks.append(data)
+        return len(data)
+
+
 def _pack(name, value):
     """A value as bytes, or the reason it could not be.
 
@@ -153,13 +185,18 @@ def _pack(name, value):
     if cached is not None and isinstance(value, _IMMUTABLE) and cached[0] is value:
         return cached[1], None
     try:
-        blob = pickle.dumps(value, protocol=4)
+        if name in _state.committed:
+            blob = pickle.dumps(value, protocol=4)
+        else:
+            sink = _Capped(MAX_BYTES)
+            pickle.dump(value, sink, protocol=4)
+            blob = b"".join(sink.chunks)
+    except _TooBig:
+        _state.blobs.pop(name, None)
+        return None, f"over the {MAX_BYTES} limit"
     except Exception as failure:
         _state.blobs.pop(name, None)
         return None, f"does not pickle: {type(failure).__name__}"
-    if len(blob) > MAX_BYTES and name not in _state.committed:
-        _state.blobs.pop(name, None)
-        return None, f"{len(blob)} bytes, over the {MAX_BYTES} limit"
     if isinstance(value, _IMMUTABLE):
         _state.blobs[name] = (value, blob)
     return blob, None
@@ -224,7 +261,7 @@ def sweep(namespace, code=None, skip=()):
     }
 
 
-def restore(namespace, state):
+def restore(namespace, state, taken=()):
     """Rebuild a saved namespace, and report what would not come back.
 
     Definitions go first: an instance being unpickled may need its class to
@@ -232,22 +269,36 @@ def restore(namespace, state):
     parked beside it rather than written over it — the live PROMPT of this run
     is not the saved one, and losing it would be worse than losing the saved
     value.
+
+    `taken` carries the names the caller bound that this module cannot know
+    about, tools above all. A tool is the caller's, not the session's, and a
+    saved value landing on top of one would take a working function away and
+    leave stale data in its place.
     """
+    reserved = RESERVED | set(taken)
     failed = []
     # Imports first: a definition restored below may close over one, and a
     # value unpickled below may need its module to exist.
     for name, dotted in (state.get("modules") or {}).items():
+        target = f"{name}_saved" if name in reserved else name
         try:
-            namespace[name] = importlib.import_module(dotted)
+            namespace[target] = importlib.import_module(dotted)
         except Exception:
             failed.append(name)
     for name, source in (state.get("functions") or {}).items():
         try:
-            exec(source, namespace)
+            if name in reserved:
+                # Defining it would bind the name the definition carries, so
+                # it is built somewhere else and parked from there.
+                built = dict(namespace)
+                exec(source, built)
+                namespace[f"{name}_saved"] = built[name]
+            else:
+                exec(source, namespace)
         except Exception:
             failed.append(name)
     for name, meta in (state.get("variables") or {}).items():
-        target = f"{name}_saved" if name in RESERVED else name
+        target = f"{name}_saved" if name in reserved else name
         try:
             namespace[target] = pickle.loads(base64.b64decode(meta["pickle_b64"]))
         except Exception:

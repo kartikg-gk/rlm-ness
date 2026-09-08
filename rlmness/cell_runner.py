@@ -229,6 +229,9 @@ def main():
 
     namespace["FINAL"] = FINAL
     _install_tools(init.get("tools", []), namespace)
+    # The caller's names, not the model's. A session must neither restore over
+    # them nor sweep them up as though the model had written them.
+    theirs = {tool["name"] for tool in init.get("tools", [])}
 
     # Kept out of the cell's namespace: the model must not see a name it did
     # not bind, and the summary is the host's question, not the model's tool.
@@ -246,7 +249,7 @@ def main():
         namespace["commit"] = session["commit"]
         saved = init.get("restore")
         if saved:
-            restored = session["restore"](namespace, saved)
+            restored = session["restore"](namespace, saved, theirs)
     threading.Thread(target=_pump, daemon=True).start()
     _write({"op": "ready", "restore_failed": restored})
 
@@ -268,7 +271,7 @@ def main():
         if operation == "sweep":
             gather = session.get("sweep")
             try:
-                swept = gather(namespace, command.get("code")) if gather else {}
+                swept = gather(namespace, command.get("code"), theirs) if gather else {}
             except Exception as failure:
                 swept = {"variables": {}, "functions": {},
                          "dropped": {"*": f"the sweep failed: {failure}"}}

@@ -99,7 +99,9 @@ def _install_session(source, state_json):
     state = json.loads(state_json) if state_json else None
     if not state:
         return json.dumps([])
-    return json.dumps(_session["restore"](globals(), state))
+    # The same set serves both directions: names already here are the
+    # caller's, so a saved value parks beside one rather than replacing it.
+    return json.dumps(_session["restore"](globals(), state, _session_owned))
 
 def _sweep(code):
     gather = _session.get("sweep")
