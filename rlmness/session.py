@@ -200,7 +200,7 @@ class Session:
 
     # ---- what the next run is told ---------------------------------------
 
-    def probe(self, restore_failed=()) -> str:
+    def probe(self, restore_failed=(), taken=()) -> str:
         """The inventory of what is actually bound, for the opening step.
 
         This belongs with the opening cell's output rather than in the
@@ -211,6 +211,10 @@ class Session:
         have had.
         """
         failed = set(restore_failed)
+        # Whatever the caller bound under its own name. A saved value that
+        # collided with one was parked beside it, so it is listed the way it
+        # is actually bound rather than the way it was saved.
+        reserved = RESERVED | set(taken)
         lines = [
             "",
             "This namespace is kept between runs. Everything bound here when a "
@@ -225,7 +229,7 @@ class Session:
             lines.append("")
             lines.append("Restored into this namespace:")
         for name, meta in living:
-            shown = f"{name}_saved" if name in RESERVED else name
+            shown = f"{name}_saved" if name in reserved else name
             described = _describe(meta)
             lines.append(
                 f"  {shown}: {meta.get('type', '?')} = {_short(meta.get('preview', ''), 160)}"

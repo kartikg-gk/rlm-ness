@@ -489,7 +489,10 @@ def solve(
         # should read it in the same place it reads everything else it knows
         # about the namespace.
         if session is not None and depth == 0:
-            shown += session.probe(getattr(runtime, "restore_failed", ()))
+            shown += session.probe(
+                getattr(runtime, "restore_failed", ()),
+                [tool.name for tool in prepared],
+            )
         stamps = {"execution_start": started, "execution_end": _now()}
         emit(
             trace, "output_received",
