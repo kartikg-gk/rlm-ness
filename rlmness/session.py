@@ -16,6 +16,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .session_guest import RESERVED
+
+#: A session addressed by a directory keeps its state under this name, so a
+#: directory can hold the state beside whatever else belongs to the session.
+STATE_FILE = "state.json"
+
 #: Raised whenever a field is added that an older reader would need. Readers
 #: accept anything at or below their own version and say so plainly otherwise.
 VERSION = 1
@@ -46,20 +52,48 @@ class Session:
     functions: dict[str, str] = field(default_factory=dict)
     modules: dict[str, str] = field(default_factory=dict)
     dropped: dict[str, str] = field(default_factory=dict)
+    #: Where this session came from and where it goes back to. Bound by
+    #: `load`, so every later save knows its own destination and a step can
+    #: write itself down without being handed the path again.
+    path: Path | None = field(default=None, compare=False, repr=False)
+    #: Whether the code of earlier runs is shown to the next one. On by
+    #: default: how something was built is most of what makes it reusable. Off
+    #: for a long-lived session, where the dump grows without bound and
+    #: eventually costs more than it saves.
+    show_code: bool = field(default=True, compare=False, repr=False)
+    #: What was last written there. A step that changed nothing should not
+    #: rewrite the file: the write is the expensive part of saving often, and
+    #: skipping it also narrows the window in which a crash lands mid-rename.
+    _written: str = field(default="", compare=False, repr=False)
 
     # ---- persistence -----------------------------------------------------
 
+    @staticmethod
+    def resolve(target: Path | str, session_id: str | None = None) -> Path:
+        """The state file named by a target that may be a file or a directory.
+
+        A bare file path is the state itself. A directory holds it under a
+        fixed name, and an id names a directory inside that one — which is how
+        several sessions share a parent without sharing a state.
+        """
+        target = Path(target)
+        if session_id:
+            return target / session_id / STATE_FILE
+        if target.is_dir() or target.suffix == "":
+            return target / STATE_FILE
+        return target
+
     @classmethod
-    def load(cls, path: Path | str) -> "Session":
+    def load(cls, path: Path | str, session_id: str | None = None) -> "Session":
         """Read a session, or start one if the file is not there yet.
 
         A missing file is the ordinary first run, not an error. A corrupt one
         is an error worth raising: silently starting fresh would throw away
         work the file might still have held.
         """
-        path = Path(path)
+        path = cls.resolve(path, session_id)
         if not path.exists():
-            return cls()
+            return cls(path=path)
         raw = json.loads(path.read_text(encoding="utf-8"))
         found = int(raw.get("version", 1))
         if found > VERSION:
@@ -67,8 +101,12 @@ class Session:
                 f"{path} was written by a newer build (version {found}, "
                 f"this one reads {VERSION})"
             )
+        # Read at whatever version it was written, written back at this one.
+        # Anything an older build did not record simply comes back missing and
+        # takes its default, so a file only has to be migrated forwards once.
         return cls(
-            version=found,
+            path=path,
+            version=VERSION,
             answered=[Answered(**a) for a in raw.get("answered", [])],
             asking=raw.get("asking"),
             cells=raw.get("cells", []),
@@ -78,34 +116,57 @@ class Session:
             dropped=raw.get("dropped", {}),
         )
 
-    def save(self, path: Path | str) -> None:
-        """Write the whole state, atomically.
+    def save(self, path: Path | str | None = None) -> None:
+        """Write the whole state, atomically, and only when it changed.
 
         Through a temporary file and a rename: a run interrupted mid-write
         would otherwise leave a half-written file where the session used to
         be, and lose every question it had already answered.
+
+        This is called after every step rather than once at the end, because
+        the end is exactly what a killed process never reaches. A run stopped
+        at step forty then resumes from step thirty-nine instead of from
+        nothing. The unchanged check is what makes that affordable.
         """
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        partial = path.with_suffix(path.suffix + ".part")
-        partial.write_text(
-            json.dumps(
-                {
-                    "version": VERSION,
-                    "answered": [vars(a) for a in self.answered],
-                    "asking": self.asking,
-                    "cells": self.cells,
-                    "variables": self.variables,
-                    "functions": self.functions,
-                    "modules": self.modules,
-                    "dropped": self.dropped,
-                },
-                indent=2,
-                default=str,
-            ),
-            encoding="utf-8",
+        if path is not None:
+            self.path = self.resolve(path)
+        if self.path is None:
+            return
+        body = json.dumps(
+            {
+                "version": VERSION,
+                "answered": [vars(a) for a in self.answered],
+                "asking": self.asking,
+                "cells": self.cells,
+                "variables": self.variables,
+                "functions": self.functions,
+                "modules": self.modules,
+                "dropped": self.dropped,
+            },
+            indent=2,
+            default=str,
         )
-        partial.replace(path)
+        if body == self._written:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        partial = self.path.with_suffix(self.path.suffix + ".part")
+        partial.write_text(body, encoding="utf-8")
+        partial.replace(self.path)
+        self._written = body
+
+    def clear(self) -> None:
+        """Forget everything but where the state lives.
+
+        The file is left alone until the next save, so clearing and then
+        crashing leaves the old state readable rather than deleted.
+        """
+        self.answered = []
+        self.asking = None
+        self.cells = []
+        self.variables = {}
+        self.functions = {}
+        self.modules = {}
+        self.dropped = {}
 
     # ---- what the guest sends back ---------------------------------------
 
@@ -139,13 +200,57 @@ class Session:
 
     # ---- what the next run is told ---------------------------------------
 
-    def preamble(self, show_code: bool = True) -> str:
+    def probe(self, restore_failed=()) -> str:
+        """The inventory of what is actually bound, for the opening step.
+
+        This belongs with the opening cell's output rather than in the
+        preamble, because it is a report of the namespace as it stands and the
+        preamble is a report of what earlier runs did. A name that failed to
+        come back is listed as missing here even though the preamble still
+        counts it as saved: the model is told what it has, not what it should
+        have had.
+        """
+        failed = set(restore_failed)
+        lines = [
+            "",
+            "This namespace is kept between runs. Everything bound here when a "
+            "step finishes is written down and comes back next time; anything "
+            "that will not pickle is dropped and named. commit(name, note) "
+            "keeps a value past the size limit and records what it is for.",
+        ]
+        living = [
+            (name, meta) for name, meta in self.variables.items() if name not in failed
+        ]
+        if living or self.functions:
+            lines.append("")
+            lines.append("Restored into this namespace:")
+        for name, meta in living:
+            shown = f"{name}_saved" if name in RESERVED else name
+            described = _describe(meta)
+            lines.append(
+                f"  {shown}: {meta.get('type', '?')} = {_short(meta.get('preview', ''), 160)}"
+                + (f"  -- {described}" if described else "")
+            )
+        for name, source in self.functions.items():
+            if name not in failed:
+                lines.append(f"  {name}: defined in an earlier run")
+        gone = {name: "did not come back" for name in failed}
+        gone.update(self.dropped)
+        if gone:
+            lines.append("")
+            lines.append("Not here:")
+            for name, reason in gone.items():
+                lines.append(f"  {name}: {reason}")
+        lines.append("")
+        return "\n".join(lines)
+
+    def preamble(self, show_code: bool | None = None) -> str:
         """The account of this session given to the run that resumes it.
 
-        The questions and answers are here; the variables are not, because the
-        opening step prints what is actually in the namespace and a list
-        written here could disagree with it. One of the two has to be the
-        authority and it should be the one reading the real thing.
+        The questions and answers are here; the variables are not, because
+        `probe` lists what is actually bound and a second list written here
+        could disagree with it. One of the two has to be the authority and it
+        should be the one reporting the namespace itself.
 
         The code is included because how something was built is most of what
         makes it reusable — a resumed run that can see the earlier cells
@@ -175,7 +280,7 @@ class Session:
             lines.append("Not carried over:")
             for name, reason in self.dropped.items():
                 lines.append(f"  {name}: {reason}")
-        if self.cells and show_code:
+        if self.cells and (self.show_code if show_code is None else show_code):
             lines.append("")
             lines.append("Code from earlier runs, in order:")
             lines.append("```python")
@@ -194,6 +299,17 @@ class Session:
             "functions": self.functions,
             "modules": self.modules,
         }
+
+
+def _describe(meta: dict) -> str:
+    """What was said about a value, in the order of how deliberate it was.
+
+    A note was written by calling `commit`, a comment was written beside the
+    assignment. Both are the model's own words, but only one of them was
+    written to be read later.
+    """
+    parts = [meta.get("note"), meta.get("comment")]
+    return "; ".join(part for part in parts if part)
 
 
 def _short(value, limit: int = PREVIEW) -> str:

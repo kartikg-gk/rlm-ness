@@ -21,9 +21,8 @@ import traceback
 from contextlib import redirect_stdout
 from typing import Any, Callable, Mapping
 
-from . import session_guest
 from .namespace import summarise
-from .runtime import CellOutcome
+from .runtime import SESSION as _GUEST_SOURCE, CellOutcome
 
 
 def _awaitable(function: Callable) -> Callable:
@@ -64,7 +63,7 @@ class InProcessRuntime:
         # Reset at the start of every execute() call. FINAL writes here
         # instead of raising, so code the model writes after FINAL runs the
         # same as it would in any other cell -- matching the other two
-        # runtimes, and the reference, rather than cutting the cell short.
+        # runtimes, rather than cutting the cell short.
         self._outcome = {"has_final": False, "final": None}
         self.namespace: dict[str, Any] = {
             "__name__": "__rlm_cell__",
@@ -73,12 +72,17 @@ class InProcessRuntime:
         }
         for name, function in dict(bridges).items():
             self.namespace[name] = _awaitable(function)
-        # Imported rather than shipped as source: there is no boundary to ship
-        # it across here, and the same functions do the same work either way.
+        # Executed into a private dictionary per runtime rather than imported.
+        # There is no boundary to ship it across here, but the module keeps
+        # state between steps -- committed names, harvested comments -- and a
+        # single imported copy would share that state between every agent in
+        # this interpreter, which the process-backed runtimes never do.
+        self._session: dict[str, Any] = {}
+        exec(_GUEST_SOURCE, self._session)
         self.restore_failed = set()
         if session is not None:
-            self.namespace["commit"] = session_guest.commit
-            self.restore_failed = set(session_guest.restore(self.namespace, session))
+            self.namespace["commit"] = self._session["commit"]
+            self.restore_failed = set(self._session["restore"](self.namespace, session))
         for tool in tools:
             self.namespace[tool.name] = tool.value
             # A stable handle for asserting identity without going through the
@@ -112,7 +116,7 @@ class InProcessRuntime:
         )
 
     def sweep(self, code: str | None = None) -> dict:
-        return session_guest.sweep(self.namespace, code)
+        return self._session["sweep"](self.namespace, code)
 
     def snapshot(self) -> list[dict]:
         """The same summary the other runtimes build, over the same names.
