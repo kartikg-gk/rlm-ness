@@ -445,12 +445,20 @@ def solve(
     _session_preamble = (
         session.preamble() if (session is not None and depth == 0) else ""
     )
+    if session is not None and depth == 0:
+        # Written down before a single step runs, so a run that dies leaves a
+        # record that it was asked at all. The next run's preamble says so,
+        # and says the variables of the dead one may still be here.
+        session.asking = instruction or str(prompt)
+        session.save()
 
     def _keep(step_number: int, code_text: str | None, ok: bool) -> None:
         """Take everything the namespace holds into the session.
 
-        After every step rather than at the end: a run that dies at step nine
-        should not cost the eight steps of work that came before it.
+        After every step rather than at the end, and written down there and
+        then: a run that dies at step nine should not cost the eight steps of
+        work that came before it, and a run that is killed outright never
+        reaches an end to be saved at.
         """
         if session is None or depth != 0:
             return
@@ -460,6 +468,7 @@ def solve(
              "ok": ok, "code": code_text or ""},
             getattr(runtime, "restore_failed", set()),
         )
+        session.save()
 
     def _open() -> None:
         """Look at PROMPT once, before the model is asked for anything.
@@ -474,6 +483,13 @@ def solve(
         emit(trace, "code_generated", run_id=run_id, step=0, code=opening)
         cell = runtime.execute(opening)
         shown = cell.stdout + (f"\n{cell.error}" if cell.error else "")
+        # The inventory of what a session put back goes here, with the output
+        # of the cell that looked at the namespace, rather than in the
+        # preamble. It is a report of what is bound right now, and the model
+        # should read it in the same place it reads everything else it knows
+        # about the namespace.
+        if session is not None and depth == 0:
+            shown += session.probe(getattr(runtime, "restore_failed", ()))
         stamps = {"execution_start": started, "execution_end": _now()}
         emit(
             trace, "output_received",
@@ -583,6 +599,7 @@ def solve(
                         instruction or str(prompt), cell.final,
                         trace=getattr(trace, "path", None), run_id=run_id,
                     )
+                    session.save()
                 return Answer(output=cell.final, steps=step, usage=total)
 
             _keep(step, code, not cell.error)
