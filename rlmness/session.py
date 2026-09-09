@@ -12,6 +12,7 @@ worse than one that knows it is looking at something newer.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,16 @@ STATE_FILE = "state.json"
 VERSION = 1
 
 PREVIEW = 1500
+
+#: How much earlier code a resumed run is shown, in characters. A session is
+#: meant to be used for a long time, and without a bound the whole history of
+#: it is prepended to every step of every later question.
+CODE_BUDGET = 24_000
+
+#: How many earlier questions are spelled out. Past this the count is given
+#: instead: what those runs settled is what matters, and the namespace holds
+#: the result of it.
+ANSWERS_SHOWN = 12
 
 
 @dataclass
@@ -65,6 +76,13 @@ class Session:
     #: rewrite the file: the write is the expensive part of saving often, and
     #: skipping it also narrows the window in which a crash lands mid-rename.
     _written: str = field(default="", compare=False, repr=False)
+    #: What the file looked like when this run last wrote it. A file that no
+    #: longer matches was written by somebody else.
+    _stamp: tuple | None = field(default=None, compare=False, repr=False)
+    #: Set once this run has stopped writing to the path it was given, because
+    #: another run had taken it over. Read by the caller so it can say where
+    #: the work actually went.
+    diverted: Path | None = field(default=None, compare=False, repr=False)
 
     # ---- persistence -----------------------------------------------------
 
@@ -149,10 +167,29 @@ class Session:
         if body == self._written:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self._foreign():
+            # Another run owns this file now. Overwriting it would throw away
+            # whatever it has answered since, and refusing to write would
+            # throw away this run instead, so this one steps aside and keeps
+            # its own work under a name of its own.
+            self.diverted = _beside(self.path)
+            self.path = self.diverted
+            self._stamp = None
         partial = self.path.with_suffix(self.path.suffix + ".part")
         partial.write_text(body, encoding="utf-8")
         partial.replace(self.path)
         self._written = body
+        self._stamp = _stamp_of(self.path)
+
+    def _foreign(self) -> bool:
+        """Whether the file changed underneath this run since it last wrote.
+
+        Only meaningful once this run has written at all: before that, a file
+        that is already there is the session being resumed, not a rival.
+        """
+        if self._stamp is None:
+            return False
+        return _stamp_of(self.path) != self._stamp
 
     def clear(self) -> None:
         """Forget everything but where the state lives.
@@ -270,7 +307,10 @@ class Session:
             "",
             "Already answered here:",
         ]
-        for index, item in enumerate(self.answered, 1):
+        hidden = len(self.answered) - ANSWERS_SHOWN
+        if hidden > 0:
+            lines.append(f"  [{hidden} earlier questions, not listed]")
+        for index, item in enumerate(self.answered[-ANSWERS_SHOWN:], max(hidden, 0) + 1):
             lines.append(f"  [{index}] {_short(item.question)}")
             lines.append(f"      -> {_short(item.answer)}")
         if self.asking is not None:
@@ -285,10 +325,18 @@ class Session:
             for name, reason in self.dropped.items():
                 lines.append(f"  {name}: {reason}")
         if self.cells and (self.show_code if show_code is None else show_code):
+            shown, elided = self._recent_code()
             lines.append("")
-            lines.append("Code from earlier runs, in order:")
+            if elided:
+                lines.append(
+                    f"Code from earlier runs, most recent last. {elided} earlier "
+                    "cells are not shown; what they built is in the namespace "
+                    "either way."
+                )
+            else:
+                lines.append("Code from earlier runs, in order:")
             lines.append("```python")
-            for cell in self.cells:
+            for cell in shown:
                 mark = "" if cell.get("ok", True) else "  (failed)"
                 lines.append(f"# question {cell.get('question', 0) + 1}, step {cell.get('step')}{mark}")
                 body = (cell.get("code") or "").strip()
@@ -297,12 +345,49 @@ class Session:
         lines.append("")
         return "\n".join(lines)
 
+    def _recent_code(self) -> tuple[list[dict], int]:
+        """As much of the earlier code as is worth carrying, newest first.
+
+        Every step of every question would otherwise be prepended to every
+        step of the next one, and the message list is already resent whole on
+        each turn — so an old session pays for its whole history twice over,
+        once per step, forever. The recent cells are the ones a resumed run
+        actually builds on; the old ones describe a namespace it can simply
+        look at.
+        """
+        kept, spent = [], 0
+        for cell in reversed(self.cells):
+            body = (cell.get("code") or "").strip()
+            if kept and spent + len(body) > CODE_BUDGET:
+                break
+            spent += len(body)
+            kept.append(cell)
+        kept.reverse()
+        return kept, len(self.cells) - len(kept)
+
     def state_for_guest(self) -> dict:
         return {
             "variables": self.variables,
             "functions": self.functions,
             "modules": self.modules,
         }
+
+
+def _stamp_of(path: Path) -> tuple | None:
+    try:
+        found = path.stat()
+    except OSError:
+        return None
+    return (found.st_size, found.st_mtime_ns)
+
+
+def _beside(path: Path) -> Path:
+    """A free name next to one another run has taken."""
+    for index in range(1, 1000):
+        candidate = path.with_name(f"{path.stem}.{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    return path.with_name(f"{path.stem}.{os.getpid()}{path.suffix}")
 
 
 def _describe(meta: dict) -> str:
