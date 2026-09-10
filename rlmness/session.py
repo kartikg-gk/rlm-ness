@@ -360,6 +360,16 @@ class Session:
             body = (cell.get("code") or "").strip()
             if kept and spent + len(body) > CODE_BUDGET:
                 break
+            if len(body) > CODE_BUDGET:
+                # The newest cell is always shown, so a single cell larger
+                # than the whole budget would otherwise carry straight past
+                # it. A cell that size is almost always data pasted into
+                # code, and its head says what it was.
+                cell = {**cell, "code": body[:CODE_BUDGET] + (
+                    f"\n# ... {len(body) - CODE_BUDGET} more characters of "
+                    "this cell not shown"
+                )}
+                body = cell["code"]
             spent += len(body)
             kept.append(cell)
         kept.reverse()
