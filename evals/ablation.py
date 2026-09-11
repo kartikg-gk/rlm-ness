@@ -26,6 +26,8 @@ from rlmness.providers import make_client
 from rlmness.limits import Allowance
 from rlmness.config import Config
 from rlmness.engine import solve
+from rlmness.events import Broadcast
+from rlmness.journal import Journal
 from rlmness.runtime import SubprocessRuntime
 
 from .tasks import BENCHMARK, Task, resolve, with_question_inside
@@ -119,7 +121,10 @@ def _once(task: Task, config: Config, provider: str) -> Outcome:
             config=config,
             runtime_factory=SubprocessRuntime,
             allowance=allowance,
-            trace=counter,
+            # Journalled as well as counted: a result that cannot be opened
+            # afterwards cannot be checked, and a failure with no trace
+            # cannot be told apart from a failure of the harness.
+            trace=Broadcast(Journal(), counter),
         )
         score, failure = task.score(result.output), None
     except Exception as error:
