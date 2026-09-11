@@ -199,7 +199,17 @@ class ChatClient:
                     self._reasoning_refused = True
                     continue
                 if response.status_code not in RETRIABLE_STATUS or last:
-                    response.raise_for_status()
+                    if response.is_error:
+                        # The status alone says a request was refused, not
+                        # why. The provider's own words are in the body, and
+                        # without them a refusal that does not reproduce
+                        # cannot be diagnosed afterwards at all.
+                        raise httpx.HTTPStatusError(
+                            f"{response.status_code} from {self.provider.name}: "
+                            f"{response.text[:500]}",
+                            request=response.request,
+                            response=response,
+                        )
                     return response
             self._sleep(self.backoff * 2**attempt)
         raise AssertionError("unreachable")
