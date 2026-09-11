@@ -90,6 +90,48 @@ def answers_without_looking(code: str) -> bool:
     )
 
 
+BLIND = (
+    "That FINAL was not accepted. Its value is fixed text written in the same "
+    "block that reads PROMPT, so it was settled before any of the output above "
+    "existed. Check it against that output, then call FINAL on its own."
+)
+
+
+def writes_answer_blind(code: str) -> bool:
+    """Whether a cell reads PROMPT and hands FINAL a value it cannot have read.
+
+    A FINAL of fixed text in the same block as the code meant to produce the
+    answer was written before that code ran. Nothing the block prints can
+    have informed it, so it is a guess or a memory, never a result. A FINAL
+    whose value is computed -- a name, an f-string over names, a call -- is
+    the block's own answer and is left alone, and so is fixed text in a block
+    that does not read PROMPT, which is the ordinary way to answer from
+    output already seen.
+
+    Holding the answer costs one step when it happens to be right. Every
+    held answer found in recorded runs was wrong, recalled rather than read,
+    or saved only by the block crashing before FINAL was reached.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    if not any(isinstance(node, ast.Name) and node.id == "PROMPT" for node in ast.walk(tree)):
+        return False
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "FINAL"
+        ):
+            values = list(node.args) + [keyword.value for keyword in node.keywords]
+            if not any(
+                isinstance(inner, ast.Name) for value in values for inner in ast.walk(value)
+            ):
+                return True
+    return False
+
+
 class StepsUsedUp(Exception):
     pass
 
@@ -579,7 +621,15 @@ def solve(
             timestamps["execution_end"] = _now()
             output = cell.stdout + (f"\n{cell.error}" if cell.error else "")
 
-            if cell.has_final:
+            # The block still ran, so nothing it did is lost. Only its answer
+            # is set aside, and the model is shown the output it wrote that
+            # answer without seeing.
+            held = (
+                cell.has_final
+                and config.enable_blind_final_guard
+                and writes_answer_blind(code)
+            )
+            if cell.has_final and not held:
                 emit(
                     trace, "output_received",
                     run_id=run_id, step=step, output=output, error=False,
@@ -607,6 +657,8 @@ def solve(
 
             _keep(step, code, not cell.error)
             labelled = label_output(output, config.truncate_len)
+            if held:
+                labelled += "\n\n" + BLIND
             emit(
                 trace, "output_received",
                 run_id=run_id, step=step, output=labelled, error=bool(cell.error),
