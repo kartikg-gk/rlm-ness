@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import threading
 import io
 import traceback
 from contextlib import redirect_stdout
@@ -98,6 +99,39 @@ class InProcessRuntime:
         self._outcome["has_final"] = True
         self._outcome["final"] = value
 
+    def _drive(self, pending):
+        """Run the cell's coroutine, even inside a loop that is already running.
+
+        A child's cell runs inside its parent's await, on the parent's thread,
+        so a second `asyncio.run` here refuses outright: a loop is already
+        running on it. That denied a child every helper its parent had, and
+        denied it as a cell error, so the parent read a traceback as though it
+        were an answer and carried on with it.
+
+        The nested case gets a loop of its own on a thread of its own, and
+        this thread waits for it. The common case -- a root cell, no loop
+        running -- is left exactly as it was.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(pending)
+
+        outcome = {}
+
+        def run():
+            try:
+                outcome["value"] = asyncio.run(pending)
+            except BaseException as failure:  # carried back to the real cell
+                outcome["error"] = failure
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome.get("value")
+
     def execute(self, code: str) -> CellOutcome:
         buffer = io.StringIO()
         self._outcome["has_final"] = False
@@ -110,7 +144,7 @@ class InProcessRuntime:
             with redirect_stdout(buffer):
                 pending = eval(compiled, self.namespace)
                 if pending is not None:
-                    asyncio.run(pending)
+                    self._drive(pending)
         except BaseException:
             error = traceback.format_exc()
         return CellOutcome(
