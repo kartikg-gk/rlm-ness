@@ -72,10 +72,11 @@ class Config:
     temperature: float | None = 0.1
     reasoning_effort: str | None = "low"
     # Ablations. Turn one off to measure what it was worth.
-    # Off by default. Counting down the remaining steps is scarcity
-    # pressure, and a model with two turns left will not begin work that
-    # costs two turns — which is exactly what delegating costs.
-    enable_step_banner: bool = False
+    # On past halfway, silent before it: a fresh agent does not need reminding
+    # that it has room, and an agent near the end does. The banner names the
+    # count and points at delegation, because the answer to a short budget is
+    # to hand pieces out rather than look again.
+    enable_step_banner: bool = True
     enable_delegation: bool = True
     # Refuse a first-step answer that never read PROMPT. Off by default: the
     # run now opens by reading PROMPT, which makes answering blind much less

@@ -22,8 +22,11 @@ api_max_retries: 3
 api_backoff: 0.5
 temperature: 0.1
 reasoning_effort: low
-enable_step_banner: false
+enable_step_banner: true
 enable_blind_final_guard: false
 max_seconds: 1800
 max_completion_tokens: 500000
-max_prompt_tokens: 2000000
+# One call's input plus output, not the run's total. The conversation is
+# resent every turn, so this is the ceiling that bounds how large a single
+# agent's context can grow; a cell that pastes data into code trips it.
+max_prompt_tokens: 200000

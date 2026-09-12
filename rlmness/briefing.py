@@ -14,7 +14,9 @@ window at a time."""
 
 _WHEN_STUCK_RECURSIVE = """ When a step leaves you
 no better off than the one before it, the fastest thing left is usually to
-hand the piece to a sub-agent rather than search it again from a new angle."""
+hand the piece to a sub-agent rather than search it again from a new angle.
+If you have tried and still cannot settle it, hand out what is left or say
+you do not know — either of those ends the run, and circling does not."""
 
 _WHEN_STUCK_ALONE = """ If a real attempt has
 left you stuck, say what you found and that you could not settle it, rather
