@@ -31,6 +31,10 @@ class Allowance:
     # Token ceilings are off unless asked for. Tokens are what a provider
     # always reports, so these hold where a price is never sent.
     max_completion_tokens: int | None = None
+    #: A ceiling on one call, not on the run: input plus output of a single
+    #: call. The whole conversation is sent again every turn, so this is what
+    #: actually bounds how large one agent's context may grow -- a cumulative
+    #: total says nothing about whether any single turn got out of hand.
     max_prompt_tokens: int | None = None
     calls: int = 0
     cost: float = 0.0
@@ -95,14 +99,6 @@ class Allowance:
                     f"{self.completion_tokens} completion tokens reaches the "
                     f"limit of {self.max_completion_tokens}"
                 )
-            if (
-                self.max_prompt_tokens is not None
-                and self.prompt_tokens >= self.max_prompt_tokens
-            ):
-                raise AllowanceSpent(
-                    f"{self.prompt_tokens} prompt tokens reaches the limit of "
-                    f"{self.max_prompt_tokens}"
-                )
             self.calls += 1
 
     def settle(self, usage: Spend) -> None:
@@ -123,6 +119,16 @@ class Allowance:
                 self.unpriced_calls += 1
             else:
                 self.cost += usage.cost
+            # Checked here rather than before the call, because what a call
+            # carried is only known once it has been made. Measured from the
+            # usage the provider already reported, so it needs no tokenizer.
+            carried = usage.prompt_tokens + usage.completion_tokens
+            if self.max_prompt_tokens is not None and carried > self.max_prompt_tokens:
+                raise AllowanceSpent(
+                    f"{carried} tokens in one call (input {usage.prompt_tokens} "
+                    f"+ output {usage.completion_tokens}) passes the per-call "
+                    f"limit of {self.max_prompt_tokens}"
+                )
 
     @property
     def cost_is_complete(self) -> bool:
