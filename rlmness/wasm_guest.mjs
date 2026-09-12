@@ -19,7 +19,23 @@ function send(obj) {
 }
 
 const SETUP_PY = `
-import ast, io, json, contextlib, traceback
+import ast, io, json, contextlib, sys, traceback
+
+# WebAssembly has no sockets, so the standard library's network calls already
+# fail here. What does not fail is the bridge back into JavaScript: the host
+# is an ordinary Node process with a network, and Pyodide hands the guest
+# 'js' and 'pyodide.http' by default. Either one reaches the internet, which
+# makes a runtime that calls itself sealed a liar -- and the briefing tells
+# the model in as many words that there is no network.
+#
+# Shutting the door means putting None in sys.modules: an import of that name
+# raises rather than resolving. This closes the documented ways out, which is
+# what code written by a model will reach for. It is not a claim that a
+# determined escape is impossible -- Pyodide shares one JavaScript context
+# with its host and was never built to be a security boundary.
+for _shut in ("js", "pyodide_js", "pyodide.http", "pyodide.ffi.wrappers"):
+    sys.modules[_shut] = None
+del _shut
 
 PROMPT = json.loads(_PROMPT_JSON)
 
