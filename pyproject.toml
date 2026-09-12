@@ -27,4 +27,6 @@ build-backend = "setuptools.build_meta"
 packages = ["rlmness", "evals"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# No testpaths: the suite is not part of what is published, so naming a
+# directory here makes a plain `pytest` fail on a fresh checkout for want of
+# a path that was never shipped.
