@@ -295,6 +295,12 @@ def restore(namespace, state, taken=()):
                 namespace[f"{name}_saved"] = built[name]
             else:
                 exec(source, namespace)
+                # The code that defined it belongs to an earlier run, so this
+                # run's code never shows it. Without its source on record the
+                # next sweep takes it for something defined elsewhere and drops
+                # it. A parked one is left off: its source defines the original
+                # name and would bring the collision back next time.
+                _state.sources[name] = source
         except Exception:
             failed.append(name)
     for name, meta in (state.get("variables") or {}).items():
@@ -303,4 +309,13 @@ def restore(namespace, state, taken=()):
             namespace[target] = pickle.loads(base64.b64decode(meta["pickle_b64"]))
         except Exception:
             failed.append(name)
+            continue
+        # What was said about a value travels with it. Losing the commit on
+        # resume would also lose the size exemption the commit was made for.
+        if meta.get("comment"):
+            _state.comments[target] = meta["comment"]
+        if meta.get("committed"):
+            _state.committed.add(target)
+            if meta.get("note") is not None:
+                _state.notes[target] = meta["note"]
     return failed
