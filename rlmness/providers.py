@@ -86,6 +86,30 @@ def _detail(usage: dict, section: str, field: str) -> int | None:
     return None
 
 
+def _number(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _cost(usage: dict) -> float | None:
+    """What the call cost, including when the key brings its own provider.
+
+    With a bring-your-own-key account the top-level cost is only the router's
+    fee, often zero, while the inference is billed upstream and reported
+    separately. Reading the fee alone lets a spend limit watch almost nothing
+    while the real bill grows.
+    """
+    top = _number(usage.get("cost"))
+    details = usage.get("cost_details")
+    upstream = _number(details.get("upstream_inference_cost")) if isinstance(details, dict) else None
+    if usage.get("is_byok") is True and upstream is not None:
+        return upstream + (top if top and top > 0 else 0.0)
+    if top is not None and top > 0:
+        return top
+    if upstream is not None and upstream > 0:
+        return upstream
+    return top
+
+
 def _reasoning_text(message: dict) -> str | None:
     """The model's thinking, where the provider breaks it out.
 
@@ -218,12 +242,11 @@ class ChatClient:
         response = self._post(messages, model)
         payload = response.json()
         raw = payload.get("usage") or {}
-        reported = raw.get("cost")
         usage = Spend(
             prompt_tokens=int(raw.get("prompt_tokens", 0) or 0),
             completion_tokens=int(raw.get("completion_tokens", 0) or 0),
             total_tokens=int(raw.get("total_tokens", 0) or 0),
-            cost=float(reported) if reported is not None else None,
+            cost=_cost(raw),
             cached_tokens=_detail(raw, "prompt_tokens_details", "cached_tokens"),
             reasoning_tokens=_detail(
                 raw, "completion_tokens_details", "reasoning_tokens"
