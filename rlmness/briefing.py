@@ -202,6 +202,22 @@ Python standard library is, so parse with it: `csv` for CSV or TSV,
 """
 
 
+_SCHEMA = """
+This run was given an output schema, printed at the top of the first output.
+Whatever you pass to FINAL is checked against it. A value that does not match
+is not accepted: you are shown what does not match, every name you bound is
+still there, and you call FINAL again with the value corrected. Pass plain
+JSON values — dicts, lists, strings, numbers, booleans, None. A set, a tuple
+or an object of your own class cannot be checked.
+"""
+
+_CHILD_SCHEMA = """
+When you need a particular shape back, pass `schema` a JSON Schema dict. The
+sub-agent's FINAL is checked against it the way an answer to this run would
+be, so what returns already has that shape and needs no parsing.
+"""
+
+
 def _batching_for(one: str, many: str) -> str:
     """Line the two examples up, whichever pair of names goes in.
 
@@ -246,7 +262,8 @@ def _tool_section(tools) -> str:
     return "\n".join(lines) + "\n"
 
 
-def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False) -> str:
+def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False,
+                  structured: bool = False, schema: str | None = None) -> str:
     """Describe only what the caller can actually reach.
 
     Only what the caller has is described, and only one kind of helper is
@@ -277,8 +294,14 @@ def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False) -> 
     # one to be chosen on price.
     parts = [base]
     if can_recurse:
-        parts.append(_RECURSIVE)
+        if structured:
+            parts.append(_RECURSIVE.replace("instruction=None)", "instruction=None, schema=None)"))
+            parts.append(_CHILD_SCHEMA)
+        else:
+            parts.append(_RECURSIVE)
         parts.append(_batching_for("rlm", "gather_rlm"))
+    if schema is not None:
+        parts.append(_SCHEMA)
     # Guidance about splitting work only makes sense to an agent that has
     # someone to split it with.
     parts.append(_GUIDANCE if can_recurse else _ALONE)

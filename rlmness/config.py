@@ -96,6 +96,9 @@ class Config:
     # and stops the rest when one piece fails; a hand-built gather does
     # neither. Enforced only where the runtime owns its interpreter.
     enable_batching_guard: bool = True
+    # Check FINAL against an output schema when the caller gives one, for the
+    # run and for any sub-agent asked for a shape. Off ignores every schema.
+    enable_structured_output: bool = True
 
     def model_for(self, depth: int) -> str:
         if depth == 0:
@@ -172,5 +175,8 @@ def load_config(
         inherit_tools=bool(raw.get("inherit_tools", defaults.inherit_tools)),
         enable_batching_guard=bool(
             raw.get("enable_batching_guard", defaults.enable_batching_guard)
+        ),
+        enable_structured_output=bool(
+            raw.get("enable_structured_output", defaults.enable_structured_output)
         ),
     )
