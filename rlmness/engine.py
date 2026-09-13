@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import json
 import re
 import threading
 import time
@@ -323,6 +324,10 @@ def solve(
         if output_schema is not None and config.enable_structured_output
         else None
     )
+    # With structured input off, a dict or a list arrives as the JSON text it
+    # would print as, so the run it measures sees text and nothing else.
+    if not config.enable_structured_output and not isinstance(prompt, str):
+        prompt = json.dumps(prompt, default=str)
     run_id = run_id or uuid.uuid4().hex
     runtime_factory = runtime_factory or RUNTIMES[config.runtime]
     # Validated here rather than inside a cell: a bad tool is a caller's
@@ -371,9 +376,27 @@ def solve(
             )
         return {name: tools[name] for name in granted}
 
+    def _handed(subprompt):
+        """What a sub-agent is given as its PROMPT.
+
+        Text stays text. A dict or a list is passed as itself, so a piece with
+        structure reaches the sub-agent with that structure rather than as
+        text it has to parse back apart. Anything else is refused: a number or
+        an object is not a piece of the data, and turning it into text would
+        hide the mistake that sent it.
+        """
+        if isinstance(subprompt, str):
+            return subprompt
+        if isinstance(subprompt, (dict, list)):
+            return subprompt if config.enable_structured_output else json.dumps(subprompt, default=str)
+        raise TypeError(
+            f"a sub-agent is given a string, a dict or a list, not a "
+            f"{type(subprompt).__name__}"
+        )
+
     def _child(subprompt, instruction=None, token=None, granted=None, schema=None):
         return solve(
-            str(subprompt),
+            _handed(subprompt),
             backend,
             instruction=instruction,
             config=config,
