@@ -29,6 +29,7 @@ enable_step_banner: true
 enable_first_look_guard: false
 enable_blind_final_guard: false
 enable_batching_guard: true
+enable_structured_output: true
 inherit_tools: false
 max_seconds: 1800
 max_completion_tokens: 500000

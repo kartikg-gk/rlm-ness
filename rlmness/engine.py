@@ -29,6 +29,16 @@ from .tools import describe
 from .in_process import InProcessRuntime
 from .runtime import SubprocessRuntime
 from .events import emit
+from .schema import Shape
+
+SCHEMA_SHOWN = "FINAL must be given a value matching this JSON Schema:\n{schema}\n---\n"
+
+SCHEMA_REFUSED = (
+    "FINAL was not accepted: the value does not match the output schema. "
+    "Nothing else was lost. Every name you bound is still here, so correct "
+    "the value and call FINAL again rather than redoing the work.\n\n"
+    "Schema:\n{schema}\n\nWhat does not match:\n{problems}"
+)
 
 RUNTIMES = {
     "subprocess": SubprocessRuntime,
@@ -290,6 +300,7 @@ def solve(
     run_id: str | None = None,
     parent_run_id: str | None = None,
     session=None,
+    output_schema=None,
 ) -> Answer:
     """Answer a question about `prompt`, which the model never sees whole.
 
@@ -305,6 +316,13 @@ def solve(
     a run spends half its steps before it starts.
     """
     config = config or load_config()
+    # Compiled before anything is started, so a malformed schema is reported
+    # as the caller's mistake without a sandbox or a model call being paid for.
+    shape = (
+        Shape(output_schema)
+        if output_schema is not None and config.enable_structured_output
+        else None
+    )
     run_id = run_id or uuid.uuid4().hex
     runtime_factory = runtime_factory or RUNTIMES[config.runtime]
     # Validated here rather than inside a cell: a bad tool is a caller's
@@ -353,7 +371,7 @@ def solve(
             )
         return {name: tools[name] for name in granted}
 
-    def _child(subprompt, instruction=None, token=None, granted=None):
+    def _child(subprompt, instruction=None, token=None, granted=None, schema=None):
         return solve(
             str(subprompt),
             backend,
@@ -366,12 +384,13 @@ def solve(
             cancel=token,
             tools=_for_child(granted),
             parent_run_id=run_id,
+            output_schema=schema,
         ).output
 
-    def _rlm(subprompt, instruction=None, tools=None):
+    def _rlm(subprompt, instruction=None, tools=None, schema=None):
         if not can_recurse:
             raise RuntimeError(TOO_DEEP)
-        return _child(subprompt, instruction, cancel, tools)
+        return _child(subprompt, instruction, cancel, tools, schema)
 
     def _spread(work, items):
         """Run `work` over `items` concurrently, abandoning the rest on the
@@ -417,11 +436,11 @@ def solve(
         finally:
             pool.shutdown(wait=False)
 
-    def _gather_rlm(subprompts, instruction=None, tools=None):
+    def _gather_rlm(subprompts, instruction=None, tools=None, schema=None):
         if not can_recurse:
             raise RuntimeError(TOO_DEEP)
         return _spread(
-            lambda item, token: _child(item, instruction, token, tools), subprompts
+            lambda item, token: _child(item, instruction, token, tools, schema), subprompts
         )
 
     def _gather_llm(texts):
@@ -444,6 +463,8 @@ def solve(
                 can_recurse,
                 prepared,
                 sealed=getattr(runtime_factory, "SEALED", False),
+                structured=config.enable_structured_output,
+                schema=shape.text if shape is not None else None,
             ),
         },
     ]
@@ -552,6 +573,8 @@ def solve(
         emit(trace, "code_generated", run_id=run_id, step=0, code=opening)
         cell = runtime.execute(opening)
         shown = cell.stdout + (f"\n{cell.error}" if cell.error else "")
+        if shape is not None:
+            shown = SCHEMA_SHOWN.format(schema=shape.text) + shown
         # The inventory of what a session put back goes here, with the output
         # of the cell that looked at the namespace, rather than in the
         # preamble. It is a report of what is bound right now, and the model
@@ -656,7 +679,14 @@ def solve(
                 and config.enable_blind_final_guard
                 and writes_answer_blind(code)
             )
-            if cell.has_final and not held:
+            # Checked only once the answer would otherwise stand. A refusal
+            # keeps the block's work, like a held answer, and says what to fix.
+            refused = (
+                shape.problems(cell.final)
+                if shape is not None and cell.has_final and not held
+                else []
+            )
+            if cell.has_final and not held and not refused:
                 emit(
                     trace, "output_received",
                     run_id=run_id, step=step, output=output, error=False,
@@ -686,14 +716,20 @@ def solve(
             labelled = label_output(output, config.truncate_len)
             if held:
                 labelled += "\n\n" + BLIND
+            if refused:
+                labelled += "\n\n" + SCHEMA_REFUSED.format(
+                    schema=shape.text,
+                    problems="\n".join(f"  - {line}" for line in refused),
+                )
+            failed = bool(cell.error) or bool(refused)
             emit(
                 trace, "output_received",
-                run_id=run_id, step=step, output=labelled, error=bool(cell.error),
+                run_id=run_id, step=step, output=labelled, error=failed,
             )
-            _log(trace, depth, run_id, parent_run_id, step, code, labelled, bool(cell.error), usage, timestamps, reasoning)
+            _log(trace, depth, run_id, parent_run_id, step, code, labelled, failed, usage, timestamps, reasoning)
             emit(
                 trace, "step_completed",
-                run_id=run_id, step=step, usage=usage, error=bool(cell.error), ended=_now(),
+                run_id=run_id, step=step, usage=usage, error=failed, ended=_now(),
             )
             _snapshot(step)
             messages.append({"role": "user", "content": f"{banner}Output:\n{labelled}"})
