@@ -80,7 +80,9 @@ def _install_batch_guard(replacements_json):
     if not replacements:
         return
     real = asyncio.gather
-    instead = ", ".join(sorted(set(replacements.values())))
+    helpers = sorted(set(replacements.values()))
+    instead = ", ".join(helpers)
+    example = " or ".join(f"await {name}([a, b])" for name in helpers)
     def gather(*awaitables, **kwargs):
         if any(getattr(item, "cr_code", None) in _DELEGATION_CODES for item in awaitables):
             for item in awaitables:
@@ -90,7 +92,8 @@ def _install_batch_guard(replacements_json):
                 "asyncio.gather was given sub-agent calls. Use " + instead
                 + " with a list instead: it runs the same calls at the same "
                 "time, keeps them inside the limit on how many may run at "
-                "once, and stops the rest as soon as one fails."
+                "once, and stops the rest as soon as one fails. Example: "
+                + example
             )
         return real(*awaitables, **kwargs)
     asyncio.gather = gather
