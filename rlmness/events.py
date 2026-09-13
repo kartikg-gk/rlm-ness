@@ -226,6 +226,63 @@ class RunTree:
                 self.status = FAILED
             self._touch()
 
+    # -- reading a trace back ----------------------------------------------
+
+    @classmethod
+    def replay(cls, records) -> "RunTree":
+        """The tree a finished run leaves in its trace.
+
+        A trace records each step once it is over, so a step comes back whole
+        rather than as the four events it arrived in. An agent whose opening was
+        not recorded still gets a place, taken from its first step.
+        """
+        tree = cls()
+        results: dict[str, Any] = {}
+        known = set(Spend.__dataclass_fields__)
+        for record in records:
+            kind = record.get("kind")
+            run_id = record.get("run_id") or "root"
+            if kind in ("run_started", "step") and run_id not in tree.agents:
+                tree.run_started(
+                    run_id=run_id,
+                    parent_run_id=record.get("parent_run_id"),
+                    depth=record.get("depth", 0),
+                    model=record.get("model") or "",
+                    instruction=record.get("instruction"),
+                    prompt_type="",
+                    prompt_size=0,
+                )
+            if kind == "step":
+                number = record.get("step", 0)
+                stamps = record.get("timestamps") or {}
+                error = bool(record.get("error"))
+                raw = record.get("usage") or {}
+                tree.step_started(
+                    run_id=run_id, step=number,
+                    started=stamps.get("llm_call_start") or stamps.get("execution_start"),
+                )
+                tree.code_generated(run_id=run_id, step=number, code=record.get("code"))
+                tree.output_received(
+                    run_id=run_id, step=number, output=record.get("output") or "", error=error
+                )
+                tree.step_completed(
+                    run_id=run_id, step=number,
+                    usage=Spend(**{key: value for key, value in raw.items() if key in known}),
+                    error=error,
+                    ended=stamps.get("execution_end") or stamps.get("llm_call_end"),
+                )
+            elif kind == "final":
+                results[run_id] = record.get("result")
+            elif kind == "run_completed":
+                tree.run_completed(run_id=run_id, result=results.get(run_id))
+            elif kind == "run_failed":
+                tree.run_failed(run_id=run_id, error=record.get("error"))
+        for run_id, result in results.items():
+            agent = tree.agents.get(run_id)
+            if agent is not None and agent.status == RUNNING:
+                tree.run_completed(run_id=run_id, result=result)
+        return tree
+
     # -- reading -----------------------------------------------------------
 
     def children_of(self, run_id: str) -> list[AgentState]:

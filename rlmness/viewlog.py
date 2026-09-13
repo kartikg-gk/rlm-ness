@@ -256,6 +256,11 @@ def main(argv=None) -> int:
         "--session-id",
         help="read the session of this name inside a session directory",
     )
+    parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="browse it in the terminal: every question, each run, what the session kept",
+    )
     arguments = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     if arguments.trace is not None:
@@ -268,7 +273,13 @@ def main(argv=None) -> int:
                 print(f"no session at {state}", file=sys.stderr)
                 return 1
             try:
-                print(render_session(state), end="")
+                if arguments.tui:
+                    browser = _browser()
+                    if browser is None:
+                        return 1
+                    browser.browse_session(state)
+                else:
+                    print(render_session(state), end="")
             except ValueError as failure:
                 print(str(failure), file=sys.stderr)
                 return 1
@@ -293,6 +304,13 @@ def main(argv=None) -> int:
             print(f"not found: {arguments.trace}", file=sys.stderr)
             return 1
 
+    if arguments.tui:
+        browser = _browser()
+        if browser is None:
+            return 1
+        browser.browse_trace(path)
+        return 0
+
     print(
         render(
             path,
@@ -302,6 +320,16 @@ def main(argv=None) -> int:
         end="",
     )
     return 0
+
+
+def _browser():
+    """The terminal browser, or None with a note saying how to get it."""
+    try:
+        from . import session_view
+    except ImportError:
+        print("the browser needs textual: pip install 'rlm-ness[tui]'", file=sys.stderr)
+        return None
+    return session_view
 
 
 if __name__ == "__main__":
