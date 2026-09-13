@@ -5,7 +5,7 @@ primary_agent: z-ai/glm-5
 # reach through the same key, so this needs no extra setup.
 sub_agent: minimax/minimax-m2.5
 max_steps: 20
-truncate_len: 2000
+truncate_len: 10000
 timeout: 120
 max_depth: 3
 # A backstop, not the guard meant to bite: max_cost stops an ordinary run,
@@ -18,13 +18,18 @@ max_cost: 1.0
 max_concurrent: 16
 max_live: 32
 runtime: subprocess
+provider: openrouter
+api_timeout: 60
 api_max_retries: 3
 api_backoff: 0.5
 temperature: 0.1
 reasoning_effort: low
+enable_delegation: true
 enable_step_banner: true
+enable_first_look_guard: false
 enable_blind_final_guard: false
 enable_batching_guard: true
+inherit_tools: false
 max_seconds: 1800
 max_completion_tokens: 500000
 # One call's input plus output, not the run's total. The conversation is
