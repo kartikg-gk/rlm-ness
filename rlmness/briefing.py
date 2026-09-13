@@ -211,6 +211,20 @@ JSON values — dicts, lists, strings, numbers, booleans, None. A set, a tuple
 or an object of your own class cannot be checked.
 """
 
+_STRUCTURED_INPUT = """
+PROMPT is not always text. When it is a dict, the first output lists its keys
+and, for each one, the value's type, its length and how it begins. Index it
+directly, PROMPT["key"], rather than turning the dict into a string and
+searching that.
+"""
+
+_CHILD_DICT = """
+A subprompt can be a string, a dict or a list. When a piece has structure,
+hand it over as a dict of its data fields and keep what you want done in
+`instruction`: the sub-agent gets that dict as its PROMPT and does not have to
+parse it back out of text.
+"""
+
 _CHILD_SCHEMA = """
 When you need a particular shape back, pass `schema` a JSON Schema dict. The
 sub-agent's FINAL is checked against it the way an answer to this run would
@@ -296,10 +310,13 @@ def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False,
     if can_recurse:
         if structured:
             parts.append(_RECURSIVE.replace("instruction=None)", "instruction=None, schema=None)"))
+            parts.append(_CHILD_DICT)
             parts.append(_CHILD_SCHEMA)
         else:
             parts.append(_RECURSIVE)
         parts.append(_batching_for("rlm", "gather_rlm"))
+    if structured:
+        parts.append(_STRUCTURED_INPUT)
     if schema is not None:
         parts.append(_SCHEMA)
     # Guidance about splitting work only makes sense to an agent that has
@@ -318,24 +335,44 @@ def shows_everything(prompt) -> bool:
     ask here rather than re-deriving the rule, or the two answers drift and
     the model gets told it has not seen something it was handed in full.
     """
+    if isinstance(prompt, dict):
+        return all(len(str(value)) <= FIELD_PREVIEW for value in prompt.values())
     return len(str(prompt)) <= 2 * PREVIEW
 
 
-OPENING_CODE = '''print("PROMPT type:", type(PROMPT).__name__)
-print("PROMPT length:", len(PROMPT) if hasattr(PROMPT, "__len__") else "N/A")
+# How much of each value a dict's opening shows. A dict is described key by
+# key, so each value gets a short look rather than the ends of one long text.
+FIELD_PREVIEW = 200
 
-if len(str(PROMPT)) > {preview}:
-    print("first {preview} characters of str(PROMPT):", str(PROMPT)[:{preview}])
+OPENING_CODE = '''if isinstance(PROMPT, dict):
+    print("PROMPT type: dict")
+    print(f"Keys ({{len(PROMPT)}}): {{list(PROMPT.keys())}}")
     print("---")
-    print("last {preview} characters of str(PROMPT):", str(PROMPT)[-{preview}:])
+    for _key, _value in PROMPT.items():
+        try:
+            _size = f", len={{len(_value)}}"
+        except TypeError:
+            _size = ""
+        _shown = str(_value)
+        if len(_shown) > {field}:
+            _shown = _shown[:{field}] + "...[truncated]"
+        print(f"  [{{_key!r}}] ({{type(_value).__name__}}{{_size}}): {{_shown}}")
 else:
-    print("PROMPT:", PROMPT)
+    print("PROMPT type:", type(PROMPT).__name__)
+    print("PROMPT length:", len(PROMPT) if hasattr(PROMPT, "__len__") else "N/A")
+
+    if len(str(PROMPT)) > {preview}:
+        print("first {preview} characters of str(PROMPT):", str(PROMPT)[:{preview}])
+        print("---")
+        print("last {preview} characters of str(PROMPT):", str(PROMPT)[-{preview}:])
+    else:
+        print("PROMPT:", PROMPT)
 '''
 
 
 def opening_code() -> str:
     """The cell that looks at PROMPT before the model is asked anything."""
-    return OPENING_CODE.format(preview=PREVIEW)
+    return OPENING_CODE.format(preview=PREVIEW, field=FIELD_PREVIEW)
 
 
 def opening_message(code: str, output: str, instruction: str | None = None,
