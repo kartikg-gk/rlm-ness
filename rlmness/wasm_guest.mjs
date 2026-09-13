@@ -49,6 +49,11 @@ def FINAL(value=None):
     _outcome["has_final"] = True
     _outcome["final"] = value
 
+# Helpers whose single call must not be gathered by hand, and the code objects
+# that let such a call be recognised. Filled before any helper is made.
+_BATCH_ONLY = {}
+_DELEGATION_CODES = set()
+
 def _make_proxy(name):
     async def proxy(*args, **kwargs):
         raw = await _bridge(
@@ -58,7 +63,37 @@ def _make_proxy(name):
         if not reply.get("ok"):
             raise RuntimeError(reply.get("error") or f"{name}() failed on the host")
         return reply.get("value")
-    return proxy
+    if name not in _BATCH_ONLY:
+        return proxy
+    # A separate function, so a call to it can be told apart by its code.
+    async def delegation(*args, **kwargs):
+        return await proxy(*args, **kwargs)
+    _DELEGATION_CODES.add(delegation.__code__)
+    return delegation
+
+def _install_batch_guard(replacements_json):
+    # Each sandbox has an interpreter of its own, so replacing gather here
+    # touches this agent and no other.
+    import asyncio
+    replacements = json.loads(replacements_json) if replacements_json else {}
+    _BATCH_ONLY.update(replacements)
+    if not replacements:
+        return
+    real = asyncio.gather
+    instead = ", ".join(sorted(set(replacements.values())))
+    def gather(*awaitables, **kwargs):
+        if any(getattr(item, "cr_code", None) in _DELEGATION_CODES for item in awaitables):
+            for item in awaitables:
+                if asyncio.iscoroutine(item):
+                    item.close()
+            raise RuntimeError(
+                "asyncio.gather was given sub-agent calls. Use " + instead
+                + " with a list instead: it runs the same calls at the same "
+                "time, keeps them inside the limit on how many may run at "
+                "once, and stops the rest as soon as one fails."
+            )
+        return real(*awaitables, **kwargs)
+    asyncio.gather = gather
 
 def _install_tools(specs_json):
     # Defined here, inside the guest, so calling one never leaves WebAssembly.
@@ -196,6 +231,10 @@ async function open(sid, msg) {
   py.globals.set("_PROMPT_JSON", JSON.stringify(msg.prompt ?? ""));
   py.globals.set("_bridge", bridge);
   await py.runPythonAsync(SETUP_PY);
+  // Before the helpers are made, so each knows whether it is a call that has
+  // to go through the gather helper rather than asyncio.gather.
+  py.globals.set("_BATCH_ONLY_JSON", JSON.stringify(msg.batch_only ?? {}));
+  await py.runPythonAsync("_install_batch_guard(_BATCH_ONLY_JSON)");
   for (const name of msg.bridges || []) {
     py.globals.set("_bridge_name", name);
     await py.runPythonAsync("globals()[_bridge_name] = _make_proxy(_bridge_name)\n");
