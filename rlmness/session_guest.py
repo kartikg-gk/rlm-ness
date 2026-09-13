@@ -31,7 +31,7 @@ import types
 #: every step would cost more than rebuilding it.
 MAX_BYTES = 5_000_000
 
-PREVIEW = 200
+PREVIEW = 2000
 
 #: Names the machinery owns. Sweeping them would save the engine's own
 #: furniture as though the model had built it, and restoring them would
