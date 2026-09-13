@@ -88,7 +88,9 @@ class ProtocolRuntime:
     as separate from each other as they would be in separate processes.
     """
 
-    def __init__(self, channel, prompt, bridges, timeout, tools=(), session=None):
+    def __init__(
+        self, channel, prompt, bridges, timeout, tools=(), session=None, batch_only=None
+    ):
         self.channel = channel
         self.timeout = timeout
         self.bridges = dict(bridges)
@@ -122,6 +124,9 @@ class ProtocolRuntime:
                 # pays nothing: no source shipped, no `commit` bound, no sweep.
                 "session": SESSION if session is not None else None,
                 "restore": session,
+                # Helpers whose single call must not be gathered by hand, each
+                # mapped to the gather helper that should be used instead.
+                "batch_only": dict(batch_only or {}),
             }
         )
         ready = self._receive()
@@ -307,6 +312,7 @@ class SubprocessRuntime(ProtocolRuntime):
         timeout: float = 120.0,
         tools=(),
         session=None,
+        batch_only=None,
     ):
         environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
         process = subprocess.Popen(
@@ -319,4 +325,6 @@ class SubprocessRuntime(ProtocolRuntime):
             bufsize=1,
             env=environment,
         )
-        super().__init__(ProcessChannel(process), prompt, bridges, timeout, tools, session)
+        super().__init__(
+            ProcessChannel(process), prompt, bridges, timeout, tools, session, batch_only
+        )

@@ -55,7 +55,12 @@ class InProcessRuntime:
         timeout: float | None = None,
         tools=(),
         session=None,
+        batch_only=None,
     ):
+        # `batch_only` is accepted and not enforced. Refusing asyncio.gather
+        # means replacing it, and this runtime shares its interpreter -- and
+        # that interpreter's asyncio -- with the engine and with every other
+        # agent running in it. Replacing it here would change all of them.
         # Kept for a uniform signature. There is no process to interrupt, so a
         # cell that never returns holds this thread; the process-backed
         # runtimes are the ones that can be timed out.

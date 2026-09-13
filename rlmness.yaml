@@ -24,6 +24,7 @@ temperature: 0.1
 reasoning_effort: low
 enable_step_banner: true
 enable_blind_final_guard: false
+enable_batching_guard: true
 max_seconds: 1800
 max_completion_tokens: 500000
 # One call's input plus output, not the run's total. The conversation is

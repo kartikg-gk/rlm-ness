@@ -91,6 +91,11 @@ class Config:
     # A child starts with nothing its parent did not hand it. Turning this on
     # makes a child receive its parent's tools when the call does not say.
     inherit_tools: bool = False
+    # Refuse a sub-agent call handed to asyncio.gather and name the gather
+    # helper instead. The helper keeps a fan-out inside the concurrency limit
+    # and stops the rest when one piece fails; a hand-built gather does
+    # neither. Enforced only where the runtime owns its interpreter.
+    enable_batching_guard: bool = True
 
     def model_for(self, depth: int) -> str:
         if depth == 0:
@@ -165,4 +170,7 @@ def load_config(
             raw.get("enable_blind_final_guard", defaults.enable_blind_final_guard)
         ),
         inherit_tools=bool(raw.get("inherit_tools", defaults.inherit_tools)),
+        enable_batching_guard=bool(
+            raw.get("enable_batching_guard", defaults.enable_batching_guard)
+        ),
     )

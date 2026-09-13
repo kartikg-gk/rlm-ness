@@ -169,6 +169,7 @@ class WasmRuntime(ProtocolRuntime):
         tools=(),
         node: str = "node",
         session=None,
+        batch_only=None,
     ):
         if shutil.which(node) is None:
             raise RuntimeError(f"{node!r} is not on PATH")
@@ -178,7 +179,7 @@ class WasmRuntime(ProtocolRuntime):
         # run brings with it. Naming them apart here because the base class
         # takes both and confusing them would be silent.
         channel = _Session(host, f"s{next(_names)}")
-        super().__init__(channel, prompt, bridges, timeout, tools, session)
+        super().__init__(channel, prompt, bridges, timeout, tools, session, batch_only)
 
 
 def wasm_available(node: str = "node") -> bool:

@@ -100,8 +100,45 @@ _outcome = {"has_final": False, "final": None}
 
 _next_id = 0
 
+# Code objects of the helpers whose single call must not be gathered by hand.
+# A coroutine is recognised by its code alone, so it stays a real coroutine
+# and everything else that accepts one -- await, create_task -- still does.
+_DELEGATION_CODES = set()
 
-def _make_proxy(name):
+
+def _install_batch_guard(replacements):
+    """Refuse a sub-agent call handed to asyncio.gather, and name the helper.
+
+    The gather helper does three things a hand-built gather cannot: it keeps a
+    fan-out inside the limit on how many sub-agents run at once, it claims a
+    slot for each child, and it stops the remaining children as soon as one
+    fails, so the run is not billed for answers nobody will read. Replacing
+    gather here touches only this process, which belongs to this agent alone.
+    """
+    if not replacements:
+        return
+    real = asyncio.gather
+    instead = ", ".join(sorted(set(replacements.values())))
+
+    def gather(*awaitables, **kwargs):
+        if any(getattr(item, "cr_code", None) in _DELEGATION_CODES for item in awaitables):
+            # None of them will run now, so none should be left behind to
+            # warn that it was never awaited.
+            for item in awaitables:
+                if asyncio.iscoroutine(item):
+                    item.close()
+            raise RuntimeError(
+                "asyncio.gather was given sub-agent calls. Use " + instead
+                + " with a list instead: it runs the same calls at the same "
+                "time, keeps them inside the limit on how many may run at "
+                "once, and stops the rest as soon as one fails."
+            )
+        return real(*awaitables, **kwargs)
+
+    asyncio.gather = gather
+
+
+def _make_proxy(name, batched=False):
     """A helper that really yields while the host works on it.
 
     The body used to write its request and then spin on the wire until its own
@@ -134,7 +171,16 @@ def _make_proxy(name):
             raise
         return await future
 
-    return proxy
+    if not batched:
+        return proxy
+
+    # A separate function, so a call to it can be told apart by its code:
+    # a coroutine made here is a sub-agent call, and nothing else is.
+    async def delegation(*args, **kwargs):
+        return await proxy(*args, **kwargs)
+
+    _DELEGATION_CODES.add(delegation.__code__)
+    return delegation
 
 
 def _install_tools(specs, namespace):
@@ -220,8 +266,10 @@ def main():
         raise RuntimeError(f"expected init, got {init!r}")
 
     namespace = {"__name__": "__rlm_cell__", "PROMPT": init.get("prompt", "")}
+    batched = init.get("batch_only") or {}
     for name in init.get("bridges", []):
-        namespace[name] = _make_proxy(name)
+        namespace[name] = _make_proxy(name, name in batched)
+    _install_batch_guard(batched)
 
     def FINAL(answer=None):
         _outcome["has_final"] = True

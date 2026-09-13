@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import inspect
 import re
 import threading
 import time
@@ -255,6 +256,22 @@ def _now() -> str:
     return _CLOCK.now()
 
 
+def _accepts(factory, keyword: str) -> bool:
+    """Whether a runtime factory can be handed this keyword.
+
+    A keyword added after a runtime or a test double was written would break
+    it if passed unconditionally. Asking first keeps those working.
+    """
+    try:
+        parameters = inspect.signature(factory).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == keyword or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
 _add = combine
 
 
@@ -465,6 +482,16 @@ def solve(
     # Passed as a keyword and only when there is one, so a runtime or a test
     # double that predates sessions keeps its old signature.
     extra = {"session": carried} if carried is not None else {}
+    # A sub-agent call handed to asyncio.gather skips everything the gather
+    # helper does for a fan-out: the limit on how many run at once, the slot
+    # each child holds, and stopping the rest when one piece fails. Refused
+    # where the runtime can refuse it, and only where delegation is bound.
+    if (
+        config.enable_batching_guard
+        and "rlm" in bridges
+        and _accepts(runtime_factory, "batch_only")
+    ):
+        extra["batch_only"] = {"rlm": "gather_rlm"}
     runtime = runtime_factory(prompt, bridges, config.timeout, prepared, **extra)
 
     def _snapshot(step: int) -> None:

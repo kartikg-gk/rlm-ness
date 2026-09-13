@@ -159,10 +159,12 @@ do identical work, and the second finishes in about the time of the slowest
 chunk instead of the sum of all of them. Whenever you are asking the same
 question of many pieces, put the pieces in a list and make one gather call.
 
-`asyncio.gather` over these helpers works too, and overlaps the same way —
-reach for whichever reads better. The gather helper crosses to the host once
-instead of once per piece, so it is the cheaper of the two when you are asking
-one question of many pieces.
+Use the gather helper for this, not `asyncio.gather` over single calls. The
+gather helper crosses to the host once, keeps the fan-out inside the limit on
+how many sub-agents may run at once, and stops the remaining pieces the moment
+one fails, so the run is not billed for answers nobody will read. A hand-built
+`asyncio.gather` over single calls does none of that, and is refused wherever
+the runtime can refuse it.
 """
 
 _GUIDANCE = """
