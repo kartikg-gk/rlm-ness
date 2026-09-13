@@ -195,7 +195,7 @@ def main() -> int:
     parser.add_argument("-n", "--num-samples", type=int, default=3)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--max-steps", type=int, default=20)
-    parser.add_argument("--truncate-len", type=int, default=2000)
+    parser.add_argument("--truncate-len", type=int, default=Config.truncate_len)
     parser.add_argument("--max-depth", type=int, default=3)
     parser.add_argument(
         "--question-inside",

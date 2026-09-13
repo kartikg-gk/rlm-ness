@@ -22,10 +22,10 @@ class Config:
     # to read the answers back, which only buys anything when there are
     # turns to spare.
     max_steps: int = 20
-    # How much of a cell's output comes back. Generous truncation lets the
-    # model read a chunk itself rather than hand it to a helper, which is
-    # the choice this whole design exists to make attractive.
-    truncate_len: int = 2000
+    # How much of a cell's output comes back, kept from the end. Too little
+    # and a child printing its whole piece never sees the middle of it, and
+    # reports that what it was asked for is not there.
+    truncate_len: int = 10000
     timeout: float = 120.0
     max_depth: int = 3
     # Tree-wide, not per agent, and a backstop rather than the guard that is
