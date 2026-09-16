@@ -17,3 +17,5 @@ traces/
 docs/
 tests/
 evals/.cache/
+build/
+dist/

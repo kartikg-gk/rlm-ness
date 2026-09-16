@@ -7,7 +7,18 @@ from pathlib import Path
 
 import yaml
 
-DEFAULT_PATH = Path(__file__).resolve().parents[1] / "rlmness.yaml"
+from . import home as _home
+
+CONFIG_NAME = "rlmness.yaml"
+CHECKOUT_PATH = _home.CHECKOUT / CONFIG_NAME
+
+
+def default_path() -> Path:
+    """The working folder's config, else the home folder's, else a checkout's."""
+    for candidate in (Path.cwd() / CONFIG_NAME, _home.home() / CONFIG_NAME, CHECKOUT_PATH):
+        if candidate.is_file():
+            return candidate
+    return Path.cwd() / CONFIG_NAME
 
 
 class MissingModel(Exception):
@@ -127,7 +138,7 @@ def load_config(
     runtime: str | None = None,
     provider: str | None = None,
 ) -> Config:
-    path = Path(path) if path is not None else DEFAULT_PATH
+    path = Path(path) if path is not None else default_path()
     try:
         raw = yaml.safe_load(path.read_text()) or {}
     except FileNotFoundError:
@@ -136,7 +147,8 @@ def load_config(
     model = primary_agent or raw.get("primary_agent")
     if not model:
         raise MissingModel(
-            "primary_agent is required: set it in the config file or pass it explicitly"
+            "no model set: pass --model, or run `rlmness --setup` for a starter "
+            "config, or add primary_agent to rlmness.yaml"
         )
 
     defaults = Config(primary_agent=model)

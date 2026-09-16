@@ -17,6 +17,7 @@ import atexit
 import itertools
 import json
 import queue
+import os
 import shutil
 import subprocess
 import threading
@@ -26,7 +27,8 @@ from typing import Callable, Mapping
 from .runtime import ProtocolRuntime, RuntimeGone
 
 _WORKER = str(Path(__file__).with_name("wasm_guest.mjs"))
-_ROOT = str(Path(__file__).resolve().parents[1])
+
+from .home import node_root, pyodide_entry
 
 
 class _Host:
@@ -47,7 +49,8 @@ class _Host:
             text=True,
             encoding="utf-8",
             bufsize=1,
-            cwd=_ROOT,
+            cwd=str(node_root()),
+            env={**os.environ, "RLMNESS_PYODIDE": pyodide_entry().as_uri()},
         )
         self._inboxes: dict[str, queue.Queue] = {}
         self._lock = threading.Lock()
@@ -183,15 +186,5 @@ class WasmRuntime(ProtocolRuntime):
 
 
 def wasm_available(node: str = "node") -> bool:
-    if shutil.which(node) is None:
-        return False
-    try:
-        probe = subprocess.run(
-            [node, "-e", "require.resolve('pyodide')"],
-            cwd=_ROOT,
-            capture_output=True,
-            timeout=30,
-        )
-        return probe.returncode == 0
-    except Exception:
-        return False
+    """Whether a sandbox can start: Node on the path, pyodide where the guest loads it."""
+    return shutil.which(node) is not None and pyodide_entry().is_file()

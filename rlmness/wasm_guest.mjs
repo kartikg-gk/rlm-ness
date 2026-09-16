@@ -10,9 +10,12 @@
 // chained per sandbox rather than globally, so one agent's slow cell does not
 // hold up another's — which is the whole point of a fan-out.
 
-import { loadPyodide } from "pyodide";
 import process from "node:process";
 import readline from "node:readline";
+
+// Named by the host, because a bare "pyodide" is looked up beside this file,
+// and an installed copy of this file has no node_modules beside it.
+const { loadPyodide } = await import(process.env.RLMNESS_PYODIDE || "pyodide");
 
 function send(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");

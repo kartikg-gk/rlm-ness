@@ -1,6 +1,10 @@
 [project]
 name = "rlm-ness"
 version = "0.1.0"
+description = "A Recursive Language Model runtime: the model works on your input through code, and hands pieces to sub-agents of itself."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27",
@@ -12,8 +16,10 @@ dependencies = [
 dev = ["pytest>=8.0"]
 # The dashboard is a viewer over the run, never part of running one.
 tui = ["textual>=0.80"]
-# Reserved for benchmark sets that ship no plain archive.
-evals = ["datasets>=2.14"]
+
+[project.urls]
+Source = "https://github.com/kartikg-gk/rlm-ness"
+Paper = "https://arxiv.org/abs/2512.24601"
 
 [project.scripts]
 rlmness = "rlmness.console:main"
@@ -25,7 +31,10 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["rlmness", "evals"]
+packages = ["rlmness"]
+
+[tool.setuptools.package-data]
+rlmness = ["wasm_guest.mjs"]
 
 [tool.pytest.ini_options]
 # No testpaths: the suite is not part of what is published, so naming a
