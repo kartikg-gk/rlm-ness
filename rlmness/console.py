@@ -69,6 +69,15 @@ def _parse(argv):
     return parser.parse_args(argv)
 
 
+def available_runtimes(wasm_ok: bool | None = None) -> list[str]:
+    """The runtimes that can start on this machine, for a picker to offer."""
+    if wasm_ok is None:
+        from .wasm_runtime import wasm_available
+
+        wasm_ok = wasm_available()
+    return [name for name in sorted(RUNTIMES) if name != "wasm" or wasm_ok]
+
+
 def main(argv=None, *, backend=None) -> int:
     args = _parse(argv if argv is not None else sys.argv[1:])
 
@@ -151,13 +160,14 @@ def main(argv=None, *, backend=None) -> int:
     if book is not None:
         book.show_code = not args.session_no_code
 
-    def run(text: str) -> Answer:
+    def run(text: str, runtime: str | None = None) -> Answer:
+        chosen = dataclasses.replace(config, runtime=runtime) if runtime else config
         try:
             return solve(
                 text,
                 backend,
                 instruction=args.instruction,
-                config=config,
+                config=chosen,
                 trace=sink,
                 session=book,
             )
@@ -171,13 +181,14 @@ def main(argv=None, *, backend=None) -> int:
         if interactive:
             # A fresh journal per question: one file holding two unrelated
             # runs would make the trace unreadable and the timeline wrong.
-            def ask(text: str) -> Answer:
+            def ask(text: str, runtime: str) -> Answer:
                 nonlocal trace, sink
                 trace = Journal()
                 sink = Broadcast(trace, live)
-                return run(text)
+                return run(text, runtime)
 
-            show(live, ask=ask, title=config.primary_agent)
+            show(live, ask=ask, title=config.primary_agent,
+                 runtimes=available_runtimes(), runtime=config.runtime)
             return 0
         if wants_dashboard:
             app = show(live, runner=lambda: run(query), title=config.primary_agent)

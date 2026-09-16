@@ -20,7 +20,7 @@ from textual.css.query import NoMatches
 from rich.syntax import Syntax
 from rich.text import Text
 
-from textual.widgets import DataTable, Footer, Input, Static, Tree
+from textual.widgets import DataTable, Footer, Input, Select, Static, Tree
 
 from .events import DONE, FAILED, RUNNING, RunTree
 
@@ -58,6 +58,10 @@ Screen { layout: vertical; background: #0d1117; color: #c9d1d9; }
     height: 3;
 }
 #ask:focus { border: solid #388bfd; }
+
+#asking { height: 3; }
+#asking #ask { width: 1fr; }
+#runtime { width: 22; }
 
 #body { height: 1fr; layout: horizontal; }
 
@@ -339,17 +343,22 @@ class Dashboard(RunPanes, App):
         title: str = "rlm-ness",
         *,
         ask=None,
+        runtimes=None,
+        runtime=None,
     ):
         """`runner` runs a query already chosen; `ask` runs one typed here.
 
         Both are callables the caller supplies, because the dashboard must not
         know how to build a backend or read a config. Given `ask`, the query
-        box appears and the run starts when it is submitted.
+        box appears and the run starts when it is submitted. Given `runtimes`
+        as well, a picker sits beside it and `ask` receives the choice.
         """
         super().__init__()
         self._init_panes(tree)
         self.runner = runner
         self.ask = ask
+        self.runtimes = tuple(runtimes or ())
+        self.runtime = runtime
         self._title = title
         self._frame = 0
         self.result: Any = None
@@ -360,7 +369,16 @@ class Dashboard(RunPanes, App):
 
     def compose(self) -> ComposeResult:
         yield Static(id="query")
-        if self.ask is not None:
+        if self.ask is not None and self.runtimes:
+            with Horizontal(id="asking"):
+                yield Input(placeholder="ask something, then press enter", id="ask")
+                yield Select(
+                    [(name, name) for name in self.runtimes],
+                    value=self.runtime if self.runtime in self.runtimes else self.runtimes[0],
+                    allow_blank=False,
+                    id="runtime",
+                )
+        elif self.ask is not None:
             yield Input(placeholder="ask something, then press enter", id="ask")
         yield from self._compose_panes()
         yield Footer()
@@ -405,7 +423,11 @@ class Dashboard(RunPanes, App):
         self._reset()
         self.state.query = text
         self.query_one("#ask", Input).value = ""
-        self._start(lambda: self.ask(text))
+        if self.runtimes:
+            chosen = self.query_one("#runtime", Select).value
+            self._start(lambda: self.ask(text, chosen))
+        else:
+            self._start(lambda: self.ask(text))
 
     def _reset(self) -> None:
         """Clear the previous run so a second query starts from nothing."""
@@ -479,8 +501,12 @@ class Dashboard(RunPanes, App):
         self._select_node(event)
 
 
-def show(tree: RunTree, runner=None, title: str = "rlm-ness", *, ask=None) -> Dashboard:
+def show(
+    tree: RunTree, runner=None, title: str = "rlm-ness", *, ask=None,
+    runtimes=None, runtime=None,
+) -> Dashboard:
     """Run the dashboard until the operator quits, and hand it back."""
-    app = Dashboard(tree, runner=runner, title=title, ask=ask)
+    app = Dashboard(tree, runner=runner, title=title, ask=ask,
+                    runtimes=runtimes, runtime=runtime)
     app.run()
     return app
