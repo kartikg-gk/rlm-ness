@@ -13,6 +13,7 @@ sub-agent returns lands back in the REPL as a plain value.
 
 ```bash
 pip install -e .
+npm install                     # sandbox runtime, needs Node 18+
 export OPENROUTER_API_KEY=sk-or-...
 
 rlmness "How many r's are in strawberry?"
@@ -31,35 +32,29 @@ Run `rlmness` with no question to open the live screen and ask from there.
 Pick with `--runtime`, no code changes:
 
 ```bash
-rlmness --runtime subprocess "..."    # default
-rlmness --runtime wasm "..."
+rlmness --runtime wasm "..."          # default
+rlmness --runtime subprocess "..."
 rlmness --runtime in-process "..."
 ```
 
-- **`subprocess`** (default) — the model's code runs in its own Python process.
-  Starts fast, full standard library. It can still touch your machine, so use it
-  on input you trust.
-- **`wasm`** — Python compiled to WebAssembly, hosted in Node. No network and no
-  access to your files. Use it for anything you didn't write yourself: fetched
-  pages, uploaded documents, other people's data.
-- **`in-process`** — runs inside your own Python process. Fastest, no isolation.
-  For trusted code where your tools need to be live objects.
+- **`wasm`** (default) — Python compiled to WebAssembly, hosted in Node. No
+  network and no access to your files, so it is safe on input you didn't write:
+  fetched pages, uploaded documents, other people's data. Needs `npm install`
+  once. Without it, `rlmness` runs on `subprocess` and tells you so.
+- **`subprocess`** — the model's code runs in its own Python process. Starts
+  faster, and can use any package you have installed. It can touch your
+  machine, so keep it for input you trust.
+- **`in-process`** — runs inside your own Python process. No isolation. For
+  trusted code where your tools need to be live objects.
 
-`wasm` needs a one-time setup:
-
-```bash
-npm install                  # fetches pyodide, needs Node 18+
-rlmness --runtime wasm "..."
-```
-
-To stop passing the flag, set it once:
+To change the default, set it once:
 
 ```bash
-export RLMNESS_RUNTIME=wasm       # this shell
+export RLMNESS_RUNTIME=subprocess     # this shell
 ```
 
 ```yaml
-runtime: wasm                     # rlmness.yaml, every run
+runtime: subprocess                   # rlmness.yaml, every run
 ```
 
 On the live screen, a picker next to the question box does the same thing per
@@ -127,7 +122,7 @@ settings most people touch:
 | Setting | Default | |
 |---|---|---|
 | `primary_agent` / `sub_agent` | — | models for the root and its sub-agents |
-| `runtime` | `subprocess` | where the code runs |
+| `runtime` | `wasm` | where the code runs |
 | `provider` | `openrouter` | `openrouter` or `deepseek` |
 | `max_cost` | `1.0` | dollar limit for a whole run |
 | `max_seconds` | `1800` | time limit for a whole run |

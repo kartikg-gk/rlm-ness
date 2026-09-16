@@ -69,12 +69,19 @@ def _parse(argv):
     return parser.parse_args(argv)
 
 
+WASM_SETUP = "run `npm install` in the rlm-ness folder (needs Node 18+)"
+
+
+def wasm_ready() -> bool:
+    from .wasm_runtime import wasm_available
+
+    return wasm_available()
+
+
 def available_runtimes(wasm_ok: bool | None = None) -> list[str]:
     """The runtimes that can start on this machine, for a picker to offer."""
     if wasm_ok is None:
-        from .wasm_runtime import wasm_available
-
-        wasm_ok = wasm_available()
+        wasm_ok = wasm_ready()
     return [name for name in sorted(RUNTIMES) if name != "wasm" or wasm_ok]
 
 
@@ -102,6 +109,18 @@ def main(argv=None, *, backend=None) -> int:
             overrides["max_depth"] = args.max_depth
         if overrides:
             config = dataclasses.replace(config, **overrides)
+        if config.runtime == "wasm" and not wasm_ready():
+            if args.runtime == "wasm":
+                # Asked for by name: running somewhere less sealed instead
+                # would quietly break the reason it was asked for.
+                print(f"the wasm runtime is not set up: {WASM_SETUP}", file=sys.stderr)
+                return 1
+            print(
+                f"wasm is not set up, running on subprocess instead. To use it, "
+                f"{WASM_SETUP}; to silence this, set runtime: subprocess.",
+                file=sys.stderr,
+            )
+            config = dataclasses.replace(config, runtime="subprocess")
         backend = backend or make_client(
             config.provider,
             max_retries=config.api_max_retries,

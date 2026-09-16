@@ -17,7 +17,7 @@ max_calls: 2000
 max_cost: 1.0
 max_concurrent: 16
 max_live: 32
-runtime: subprocess
+runtime: wasm
 provider: openrouter
 api_timeout: 60
 max_tokens: null
