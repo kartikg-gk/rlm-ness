@@ -66,6 +66,14 @@ class Config:
     # each, and a gather waits for every child, so one stuck call set the
     # clock for a whole tree.
     api_timeout: float = 60.0
+    # A ceiling on one reply, sent with the request when set. Off by default:
+    # a reply cut off mid-cell costs a step. Worth setting where a provider
+    # holds credit for the largest reply a request could produce, since an
+    # unstated ceiling is then the model's own maximum.
+    max_tokens: int | None = None
+    # A provider that refuses and says when to come back is obeyed, up to
+    # this much of a wait.
+    api_retry_after_max: float = 60.0
     # Code generation wants a near-deterministic sample, and thinking that
     # happens inside the model is thinking the REPL never sees — a run that
     # reasons its way to an answer has skipped the mechanism entirely.
@@ -157,6 +165,12 @@ def load_config(
         api_max_retries=int(raw.get("api_max_retries", defaults.api_max_retries)),
         api_backoff=float(raw.get("api_backoff", defaults.api_backoff)),
         api_timeout=float(raw.get("api_timeout", defaults.api_timeout)),
+        max_tokens=(
+            int(raw["max_tokens"]) if raw.get("max_tokens") is not None else None
+        ),
+        api_retry_after_max=float(
+            raw.get("api_retry_after_max", defaults.api_retry_after_max)
+        ),
         temperature=(
             float(raw["temperature"]) if raw.get("temperature") is not None
             else defaults.temperature

@@ -99,6 +99,8 @@ def main(argv=None, *, backend=None) -> int:
             backoff=config.api_backoff,
             temperature=config.temperature,
             reasoning_effort=config.reasoning_effort,
+            max_tokens=config.max_tokens,
+            retry_after_max=config.api_retry_after_max,
             timeout=config.api_timeout,
         )
     except MissingApiKey as error:
