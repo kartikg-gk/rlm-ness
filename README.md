@@ -115,8 +115,7 @@ await gather_rlm(
 
 Each child gets a real dict as its own `PROMPT`. Set
 `enable_structured_output: false` and every one of these becomes JSON text
-instead, which is the honest comparison when you want to measure whether the
-structure was worth anything.
+instead.
 
 ### Answers can be required to fit a shape
 
@@ -174,6 +173,57 @@ tokens spent describing them, no round trip to ask for them, and the same
 way also never gets silently overwritten by a restored session variable of the
 same name — the saved one is parked beside it as `{name}_saved`.
 
+## Where the code runs
+
+| `runtime` | Isolation | Cost |
+|---|---|---|
+| `subprocess` (default) | its own Python process | ~0.2s to start, ~28MB per agent |
+| `wasm` | Pyodide, no network — `js` and `pyodide.http` are shut | ~1.5s first boot, ~45MB per extra sandbox in a shared host |
+| `in-process` | none | free; trusted code only, and the fan-out guard cannot hold here |
+
+Pick with a flag, an environment variable, or the config file — in that order
+of precedence:
+
+```bash
+rlmness --runtime wasm "..."        # this run only
+export RLMNESS_RUNTIME=wasm         # this shell
+```
+
+```yaml
+runtime: wasm                       # rlmness.yaml, the standing default
+```
+
+From Python, pass the class itself:
+
+```python
+from rlmness.wasm_runtime import WasmRuntime
+
+solve(prompt, client, config=config, runtime_factory=WasmRuntime)
+```
+
+**Which to use.** Stay on `subprocess` unless something pushes you off it: it
+starts fastest and the code is a real Python process with the standard library
+intact. Move to `wasm` when the input is something you did not write — a
+fetched page, a customer's file, anything that could contain instructions
+aimed at the model — because a sealed guest is what stops model-written code
+from carrying that data anywhere. It costs a slower first boot and needs Node.
+Reach for `in-process` only for trusted code where you want tools to be live
+objects rather than source rebuilt in a sandbox; it has no isolation at all,
+and nothing stops a cell from touching your process.
+
+`wasm` closes the documented ways out of the sandbox. Pyodide shares a
+JavaScript context with its host and was never built as a security boundary,
+so this is a seal against model-written code doing something careless, not
+against code trying to escape.
+
+**Fan-outs must go through `gather_rlm`.** `asyncio.gather`, `wait`,
+`as_completed`, `create_task`, `ensure_future` and `TaskGroup` are all refused
+if handed a sub-agent call, with a message naming the helper. Not pedantry:
+`gather_rlm` holds the fan-out inside `max_concurrent`, claims a live slot per
+child, and cancels the remainder the moment one fails. A hand-built gather
+does none of the three and nothing would have said so. `in-process` shares its
+event loop with the caller and cannot enforce it.
+
 ## Configuration
 
 `rlmness.yaml` beside you, `--config path`, or `Config(...)` in Python.
@@ -188,11 +238,11 @@ same name — the saved one is parked beside it as `{name}_saved`.
 | `provider` | `openrouter` | `openrouter` or `deepseek` |
 | `temperature` / `reasoning_effort` | 0.1 / `low` | near-deterministic; reasoning the REPL never sees is reasoning that skipped the mechanism |
 
-**What a run may spend**
+**Limits**
 
-Every limit is held on one budget object shared by the whole tree, so a child
-four levels down is spending the same allowance as the root, not a fresh copy
-of it.
+Every limit is held on one budget shared by the whole tree, so a child four
+levels down spends the same allowance as the root rather than a fresh copy of
+it.
 
 | Field | Default | Bounds |
 |---|---|---|
@@ -218,38 +268,17 @@ of it.
 | `api_retry_after_max` | 60 | how far a provider's own `Retry-After` is obeyed. A refusal that names a time is retried; one that names none is taken as final |
 | `api_max_retries` / `api_backoff` | 3 / 0.5 | retries and growth |
 
-**Switches, each there to be turned off and measured**
+**Switches**
 
 | Field | Default | Effect |
 |---|---|---|
 | `enable_delegation` | true | bind `rlm` and `gather_rlm` at all |
 | `enable_structured_output` | true | dicts stay dicts; `output_schema` is enforced |
 | `enable_step_banner` | true | tell an agent its remaining steps once past halfway |
-| `enable_batching_guard` | true | refuse hand-rolled fan-outs (below) |
+| `enable_batching_guard` | true | refuse hand-rolled fan-outs (see Where the code runs) |
 | `enable_blind_final_guard` | false | hold a literal `FINAL` written in the same cell that first reads `PROMPT` |
 | `enable_first_look_guard` | false | refuse a first-step answer that never touched `PROMPT` |
 | `inherit_tools` | false | children get their parent's tools without being granted them |
-
-## Where the code runs
-
-| `runtime` | Isolation | Cost |
-|---|---|---|
-| `subprocess` (default) | its own Python process | ~0.2s to start, ~28MB per agent |
-| `wasm` | Pyodide, no network — `js` and `pyodide.http` are shut | ~1.5s first boot, ~45MB per extra sandbox in a shared host |
-| `in-process` | none | free; trusted code only, and the fan-out guard cannot hold here |
-
-`wasm` closes the documented ways out of the sandbox. Pyodide shares a
-JavaScript context with its host and was never built as a security boundary,
-so this is a seal against model-written code doing something careless, not
-against code trying to escape.
-
-**Fan-outs must go through `gather_rlm`.** `asyncio.gather`, `wait`,
-`as_completed`, `create_task`, `ensure_future` and `TaskGroup` are all refused
-if handed a sub-agent call, with a message naming the helper. Not pedantry:
-`gather_rlm` holds the fan-out inside `max_concurrent`, claims a live slot per
-child, and cancels the remainder the moment one fails. A hand-built gather
-does none of the three and nothing would have said so. `in-process` shares its
-event loop with the caller and cannot enforce it.
 
 ## Sessions
 
@@ -307,22 +336,6 @@ class Printer:
 
 solve(prompt, client, config=config, trace=Broadcast(Journal(), Printer()))
 ```
-
-## Measuring whether any of it helps
-
-Every switch above exists so it can be removed. The ablation runner runs a
-task set with a setting on and off and prints the spread:
-
-```bash
-python -m evals.ablation --model deepseek/deepseek-v4-flash --setting enable_step_banner
-python -m evals.ablation --model deepseek/deepseek-v4-flash --tasks longbench:hotpotqa -n 5
-```
-
-The `sanity` set is generated, costs nothing, and shows only that nothing
-broke — though its `ledger` tasks are the interesting ones, since the number
-asked for is a running total that appears nowhere in the text and so cannot be
-found by searching. `longbench` is what supports a claim that something got
-better.
 
 ## License
 
