@@ -165,6 +165,10 @@ class ChatClient:
         temperature: float | None = None,
         reasoning_effort: str | None = None,
         max_tokens: int | None = None,
+        # A bound on a whole reply, where `timeout` bounds one read of it. A
+        # reply that keeps sending a few bytes at a time resets the read
+        # timeout forever, and a fan-out waits on whichever child is stuck.
+        deadline: float | None = 600.0,
         # However long a provider says to wait, one refusal must not stall a
         # run for minutes while a fan-out waits on it.
         retry_after_max: float = 60.0,
@@ -180,9 +184,11 @@ class ChatClient:
         self.temperature = temperature
         self.reasoning_effort = reasoning_effort
         self.max_tokens = max_tokens
+        self.deadline = deadline
         self.retry_after_max = retry_after_max
         self._reasoning_refused = False
         self._sleep = time.sleep
+        self._now = time.monotonic
 
     def _body(self, messages: Sequence[Message], model: str) -> dict:
         """The request, carrying only the knobs that were actually set.
@@ -200,6 +206,44 @@ class ChatClient:
         if self.max_tokens is not None:
             body["max_tokens"] = self.max_tokens
         return body
+
+    def _send(self, body: dict) -> httpx.Response:
+        """One request, read under a deadline for the whole reply.
+
+        Read piece by piece so the clock can be checked between pieces: a
+        provider that keeps sending a little at a time never trips a per-read
+        timeout, however long the whole answer takes. A client that cannot
+        stream is served the old way rather than refused -- the bound is worth
+        having, but not at the price of the caller that passes its own client.
+        """
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        if self.deadline is None or not hasattr(self.client, "stream"):
+            return self.client.post(self.provider.endpoint, headers=headers, json=body)
+        limit = self._now() + self.deadline
+        with self.client.stream(
+            "POST", self.provider.endpoint, headers=headers, json=body
+        ) as response:
+            pieces = []
+            for piece in response.iter_bytes():
+                pieces.append(piece)
+                if self._now() > limit:
+                    raise httpx.ReadTimeout(
+                        f"no complete reply within {self.deadline:g}s",
+                        request=response.request,
+                    )
+            body = b"".join(pieces)
+            # The pieces arrive decoded, so the headers describing how they
+            # were packed no longer describe what is being handed on.
+            headers = {
+                name: value for name, value in response.headers.items()
+                if name.lower() not in ("content-encoding", "content-length")
+            }
+            return httpx.Response(
+                response.status_code,
+                headers=headers,
+                content=body,
+                request=response.request,
+            )
 
     def _retry_after(self, response: httpx.Response) -> float | None:
         """How long the provider asked us to wait, if it said so in seconds.
@@ -219,11 +263,7 @@ class ChatClient:
             last = attempt == self.max_retries
             delay = self.backoff * 2**attempt
             try:
-                response = self.client.post(
-                    self.provider.endpoint,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=self._body(messages, model),
-                )
+                response = self._send(self._body(messages, model))
             except httpx.TimeoutException:
                 # A provider that did not answer in the time allowed is not
                 # likely to answer the identical question faster. One more try

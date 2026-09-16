@@ -22,6 +22,7 @@ provider: openrouter
 api_timeout: 60
 max_tokens: null
 api_retry_after_max: 60
+api_deadline: 600
 api_max_retries: 3
 api_backoff: 0.5
 temperature: 0.1
