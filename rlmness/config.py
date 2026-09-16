@@ -74,6 +74,9 @@ class Config:
     # A provider that refuses and says when to come back is obeyed, up to
     # this much of a wait.
     api_retry_after_max: float = 60.0
+    # A bound on a whole reply, where `api_timeout` bounds one read of it.
+    # Without it a reply that trickles never times out at all.
+    api_deadline: float | None = 600.0
     # Code generation wants a near-deterministic sample, and thinking that
     # happens inside the model is thinking the REPL never sees — a run that
     # reasons its way to an answer has skipped the mechanism entirely.
@@ -170,6 +173,10 @@ def load_config(
         ),
         api_retry_after_max=float(
             raw.get("api_retry_after_max", defaults.api_retry_after_max)
+        ),
+        api_deadline=(
+            float(raw["api_deadline"]) if raw.get("api_deadline") is not None
+            else defaults.api_deadline
         ),
         temperature=(
             float(raw["temperature"]) if raw.get("temperature") is not None

@@ -108,6 +108,7 @@ def _once(task: Task, config: Config, provider: str) -> Outcome:
             reasoning_effort=config.reasoning_effort,
             max_tokens=config.max_tokens,
             retry_after_max=config.api_retry_after_max,
+            deadline=config.api_deadline,
             timeout=config.api_timeout,
         ),
         flags,

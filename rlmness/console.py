@@ -101,6 +101,7 @@ def main(argv=None, *, backend=None) -> int:
             reasoning_effort=config.reasoning_effort,
             max_tokens=config.max_tokens,
             retry_after_max=config.api_retry_after_max,
+            deadline=config.api_deadline,
             timeout=config.api_timeout,
         )
     except MissingApiKey as error:
@@ -201,6 +202,11 @@ def main(argv=None, *, backend=None) -> int:
         print(f"session: {book.path or 'kept for this process only'}  "
               f"({len(book.answered)} answered, "
               f"{len(book.variables)} variables kept)")
+        for stray in book.strays:
+            # Another run stepped aside into this file rather than overwrite
+            # ours. Nothing loads it on its own, so saying so is the only way
+            # back to the work it holds.
+            print(f"  work from another run was kept beside this one: {stray}")
         if book.diverted is not None:
             print(
                 f"  another run took {args.session} over mid-run, so this one "
