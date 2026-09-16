@@ -79,24 +79,53 @@ def _install_batch_guard(replacements_json):
     _BATCH_ONLY.update(replacements)
     if not replacements:
         return
-    real = asyncio.gather
     helpers = sorted(set(replacements.values()))
     instead = ", ".join(helpers)
     example = " or ".join(f"await {name}([a, b])" for name in helpers)
-    def gather(*awaitables, **kwargs):
-        if any(getattr(item, "cr_code", None) in _DELEGATION_CODES for item in awaitables):
-            for item in awaitables:
-                if asyncio.iscoroutine(item):
-                    item.close()
-            raise RuntimeError(
-                "asyncio.gather was given sub-agent calls. Use " + instead
-                + " with a list instead: it runs the same calls at the same "
-                "time, keeps them inside the limit on how many may run at "
-                "once, and stops the rest as soon as one fails. Example: "
-                + example
-            )
-        return real(*awaitables, **kwargs)
-    asyncio.gather = gather
+
+    def refuse(items, call):
+        items = list(items)
+        if not any(getattr(item, "cr_code", None) in _DELEGATION_CODES for item in items):
+            return
+        # None of them will run now, so none should be left behind to
+        # warn that it was never awaited.
+        for item in items:
+            if asyncio.iscoroutine(item):
+                item.close()
+        raise RuntimeError(
+            call + " was given sub-agent calls. Use " + instead
+            + " with a list instead: it runs the same calls at the same "
+            "time, keeps them inside the limit on how many may run at "
+            "once, and stops the rest as soon as one fails. Example: "
+            + example
+        )
+
+    def guarded(real, call, spread):
+        def call_it(*args, **kwargs):
+            refuse(args if spread else list(args[0]) if args else (), call)
+            return real(*args, **kwargs)
+        return call_it
+
+    def one(real, call):
+        def call_it(item, *args, **kwargs):
+            refuse([item], call)
+            return real(item, *args, **kwargs)
+        return call_it
+
+    asyncio.gather = guarded(asyncio.gather, "asyncio.gather", True)
+    asyncio.wait = guarded(asyncio.wait, "asyncio.wait", False)
+    asyncio.as_completed = guarded(asyncio.as_completed, "asyncio.as_completed", False)
+    asyncio.create_task = one(asyncio.create_task, "asyncio.create_task")
+    asyncio.ensure_future = one(asyncio.ensure_future, "asyncio.ensure_future")
+    group = getattr(asyncio, "TaskGroup", None)
+    if group is not None:
+        real_start = group.create_task
+
+        def start(self, item, *args, **kwargs):
+            refuse([item], "TaskGroup.create_task")
+            return real_start(self, item, *args, **kwargs)
+
+        group.create_task = start
 
 def _install_tools(specs_json):
     # Defined here, inside the guest, so calling one never leaves WebAssembly.

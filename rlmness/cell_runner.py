@@ -107,38 +107,65 @@ _DELEGATION_CODES = set()
 
 
 def _install_batch_guard(replacements):
-    """Refuse a sub-agent call handed to asyncio.gather, and name the helper.
+    """Refuse a sub-agent call handed to a hand-built fan-out, and name the helper.
 
     The gather helper does three things a hand-built gather cannot: it keeps a
     fan-out inside the limit on how many sub-agents run at once, it claims a
     slot for each child, and it stops the remaining children as soon as one
-    fails, so the run is not billed for answers nobody will read. Replacing
-    gather here touches only this process, which belongs to this agent alone.
+    fails, so the run is not billed for answers nobody will read. Every route
+    asyncio offers to start one is covered, not gather alone: a task started by
+    hand escapes the same three things. Replacing them here touches only this
+    process, which belongs to this agent alone.
     """
     if not replacements:
         return
-    real = asyncio.gather
     helpers = sorted(set(replacements.values()))
     instead = ", ".join(helpers)
     example = " or ".join(f"await {name}([a, b])" for name in helpers)
 
-    def gather(*awaitables, **kwargs):
-        if any(getattr(item, "cr_code", None) in _DELEGATION_CODES for item in awaitables):
-            # None of them will run now, so none should be left behind to
-            # warn that it was never awaited.
-            for item in awaitables:
-                if asyncio.iscoroutine(item):
-                    item.close()
-            raise RuntimeError(
-                "asyncio.gather was given sub-agent calls. Use " + instead
-                + " with a list instead: it runs the same calls at the same "
-                "time, keeps them inside the limit on how many may run at "
-                "once, and stops the rest as soon as one fails. Example: "
-                + example
-            )
-        return real(*awaitables, **kwargs)
+    def refuse(items, call):
+        items = list(items)
+        if not any(getattr(item, "cr_code", None) in _DELEGATION_CODES for item in items):
+            return
+        # None of them will run now, so none should be left behind to
+        # warn that it was never awaited.
+        for item in items:
+            if asyncio.iscoroutine(item):
+                item.close()
+        raise RuntimeError(
+            call + " was given sub-agent calls. Use " + instead
+            + " with a list instead: it runs the same calls at the same "
+            "time, keeps them inside the limit on how many may run at "
+            "once, and stops the rest as soon as one fails. Example: "
+            + example
+        )
 
-    asyncio.gather = gather
+    def guarded(real, call, spread):
+        def call_it(*args, **kwargs):
+            refuse(args if spread else list(args[0]) if args else (), call)
+            return real(*args, **kwargs)
+        return call_it
+
+    def one(real, call):
+        def call_it(item, *args, **kwargs):
+            refuse([item], call)
+            return real(item, *args, **kwargs)
+        return call_it
+
+    asyncio.gather = guarded(asyncio.gather, "asyncio.gather", True)
+    asyncio.wait = guarded(asyncio.wait, "asyncio.wait", False)
+    asyncio.as_completed = guarded(asyncio.as_completed, "asyncio.as_completed", False)
+    asyncio.create_task = one(asyncio.create_task, "asyncio.create_task")
+    asyncio.ensure_future = one(asyncio.ensure_future, "asyncio.ensure_future")
+    group = getattr(asyncio, "TaskGroup", None)
+    if group is not None:
+        real_start = group.create_task
+
+        def start(self, item, *args, **kwargs):
+            refuse([item], "TaskGroup.create_task")
+            return real_start(self, item, *args, **kwargs)
+
+        group.create_task = start
 
 
 def _make_proxy(name, batched=False):
