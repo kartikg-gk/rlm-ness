@@ -83,6 +83,10 @@ class Session:
     #: another run had taken it over. Read by the caller so it can say where
     #: the work actually went.
     diverted: Path | None = field(default=None, compare=False, repr=False)
+    #: States another run stepped aside into, beside this one. Nothing reads
+    #: them on its own, so a session that does not name them leaves that work
+    #: with no way back to it.
+    strays: list = field(default_factory=list, compare=False, repr=False)
 
     # ---- persistence -----------------------------------------------------
 
@@ -112,6 +116,7 @@ class Session:
         path = cls.resolve(path, session_id)
         if not path.exists():
             return cls(path=path)
+        strays = _beside_all(path)
         raw = json.loads(path.read_text(encoding="utf-8"))
         found = int(raw.get("version", 1))
         if found > VERSION:
@@ -124,6 +129,7 @@ class Session:
         # takes its default, so a file only has to be migrated forwards once.
         return cls(
             path=path,
+            strays=strays,
             version=VERSION,
             answered=[Answered(**a) for a in raw.get("answered", [])],
             asking=raw.get("asking"),
@@ -389,6 +395,20 @@ def _stamp_of(path: Path) -> tuple | None:
     except OSError:
         return None
     return (found.st_size, found.st_mtime_ns)
+
+
+def _beside_all(path: Path) -> list:
+    """The states another run stepped aside into, next to this one.
+
+    Only files this module would itself have written: `state.1.json` beside
+    `state.json`, numbered, and never a half-written `.part`.
+    """
+    found = []
+    for index in range(1, 1000):
+        candidate = path.with_name(f"{path.stem}.{index}{path.suffix}")
+        if candidate.exists():
+            found.append(candidate)
+    return found
 
 
 def _beside(path: Path) -> Path:
