@@ -1,25 +1,32 @@
 # rlm-ness
 
-A runtime for Recursive Language Models, an inference technique described in
-the RLM paper. Instead of putting a prompt directly in an LLM's context, RLM
-hands it to the model as a variable inside an external REPL. The model writes
-code to explore, slice and transform it, and can recursively call sub-agents
-of itself on the pieces that need judgement rather than string work.
+A Python runtime for **Recursive Language Models** — the inference technique
+from [Recursive Language Models](https://arxiv.org/abs/2512.24601) (Zhang,
+Kraska & Khattab, MIT CSAIL; [author's write-up](https://alexzhang13.github.io/blog/2025/rlm/)).
+The paper's idea is that a prompt does not have to be something a model reads.
+It can be something a model *operates on*.
 
-The recursion is what makes it more than a wrapper around chunking: a
-sub-agent's answer never gets dumped back into its parent's context as more
-text to re-read. It comes back as an ordinary value in the REPL — a string, a
-number, a dict — bound to a name the parent's own code already chose. So a
-gather over ten pieces costs the parent one variable holding ten results, not
-ten replies' worth of tokens.
+So here the input never enters anyone's context window. It is a variable
+called `PROMPT` in a live Python REPL. The model is shown what type it is and
+roughly how big, and then writes code — search it, slice it, count it, parse
+it. When a piece needs judgement rather than string work, the model spawns a
+sub-agent of itself on just that piece.
 
-| In the REPL | What it does |
-|---|---|
-| `PROMPT` | the input — text, or a dict/list when structured input is on |
-| `await rlm(x, instruction=None, tools=None, schema=None)` | ask one sub-agent |
-| `await gather_rlm([x, ...], instruction=None, tools=None, schema=None)` | ask many at once, in parallel |
-| `FINAL(value)` | the answer |
-| `commit(name, note=None)` | keep a variable in the session whatever its size |
+What the sub-agent returns is a **value, not a transcript**. It lands in the
+parent's REPL as an ordinary Python object bound to a name the parent's own
+code chose. Fan ten pieces out and the parent holds one list of ten answers,
+having paid for none of the ten conversations that produced them. That is the
+whole trick: recursion stays cheap because context does not accumulate.
+
+```python
+# what the model writes, not what you write
+incidents = re.findall(r"^INCIDENT.*?^---", PROMPT, re.M | re.S)
+causes = await gather_rlm(incidents, instruction="Name the root cause in under 5 words.")
+FINAL(collections.Counter(causes).most_common(3))
+```
+
+Three of those incidents could each be a megabyte. The root agent never sees
+one.
 
 ## Install
 
@@ -27,289 +34,295 @@ ten replies' worth of tokens.
 pip install -e .
 ```
 
-Requirements:
+Python 3.10+. Two optional extras, neither needed for an ordinary run:
 
-- Python 3.10+
-- Node 18+ and `npm install` — only for the `wasm` runtime
-- `pip install -e ".[tui]"` — only for the live dashboard and the session TUI
-
-## Environment variables
-
-| Variable | Provider |
+| For | Do |
 |---|---|
-| `OPENROUTER_API_KEY` | `openrouter` (default) |
-| `DEEPSEEK_API_KEY` | `deepseek` |
-| `RLMNESS_PROVIDER` | pick the provider without a flag |
-| `RLMNESS_RUNTIME` | pick the runtime without a flag |
+| the `wasm` runtime | Node 18+, then `npm install` |
+| the live dashboard and session browser | `pip install -e ".[tui]"` |
 
-## Quick start
+Set a key for whichever provider you want:
 
-```python
-from rlmness import Config, make_client, solve
-
-config = Config(primary_agent="z-ai/glm-5")
-answer = solve("Generate 50 fruits and count the letter r in each",
-               make_client("openrouter"), config=config)
-
-print(answer.output)
-print(answer.steps, answer.usage.total_tokens, answer.usage.cost)
+```bash
+export OPENROUTER_API_KEY=...     # default provider
+export DEEPSEEK_API_KEY=...       # --provider deepseek
 ```
 
-`primary_agent` has no default. `sub_agent` falls back to it.
+`RLMNESS_PROVIDER` and `RLMNESS_RUNTIME` set those without a flag. Precedence
+is flag, then environment, then `rlmness.yaml`.
 
-### From the command line
+## Quick start
 
 ```bash
 rlmness "Generate 50 fruits and count the letter r in each" --model z-ai/glm-5
 ```
 
-A file goes in through stdin, as text:
+Pipe the data in and keep the question separate from it:
 
 ```bash
-cat reviews.json | rlmness --instruction "Aggregate the reviews into a verdict"
+cat incidents.log | rlmness --instruction "Which service failed most, and when?"
 ```
 
-Flags: `--model`, `--instruction`, `--max-steps`, `--max-depth`, `--config`,
-`--runtime`, `--provider`, `--dashboard`, and the session flags below. With no
-query and a terminal attached, the dashboard opens and takes the question.
-
-## Arbitrarily long context
+From Python:
 
 ```python
-transcripts = open("all_transcripts.txt").read()
+from rlmness import Config, make_client, solve
 
-answer = solve(transcripts, client, config=config,
-               instruction="Summarise what the first five ML guests said about AGI.")
+answer = solve(
+    open("incidents.log").read(),
+    make_client("openrouter"),
+    config=Config(primary_agent="z-ai/glm-5", sub_agent="minimax/minimax-m2.5"),
+    instruction="Which service failed most, and when?",
+)
+
+print(answer.output)                                   # whatever FINAL was given
+print(answer.steps, answer.usage.total_tokens, answer.usage.cost)
 ```
 
-The model searches, filters and chunks `PROMPT` itself. Passing the question
-as `instruction` keeps it out of the data; if it has to travel inside, put it
-at the very top or bottom.
+`primary_agent` has no default and never guesses one. `sub_agent` falls back
+to it, but setting it to something cheaper is what makes delegating worth
+doing — a child that costs a fraction of its parent changes the arithmetic of
+handing work out.
 
-## Structured input and output
+Run `rlmness` with no query in a terminal and the dashboard opens and takes
+the question there.
 
-`PROMPT` can be a dict or list, not only a string — the opening step shows the
-model its keys, or its type and length, so it can index `PROMPT["reviews"]`
-directly rather than parsing text back apart. A sub-agent given a dict or list
-receives it as itself, the same way: `await rlm({"items": rows}, instruction="sum them")`
-hands the child a real dict, not a string it has to re-parse. Turn it off with
-`enable_structured_output: false` and everything — root prompt and every
-handoff — becomes JSON text instead.
+## What the model is given
 
-`FINAL` can be checked against a shape:
+| Name | What it is |
+|---|---|
+| `PROMPT` | the input — text, or a dict/list left as itself |
+| `await rlm(x, instruction=, tools=, schema=)` | one sub-agent on one piece |
+| `await gather_rlm([x, ...], instruction=, tools=, schema=)` | many at once, bounded and cancelled together |
+| `FINAL(value)` | the answer, any Python value |
+| `commit(name, note=)` | keep this variable in the session however large it is |
+
+Nothing else is injected. The first cell is executed for the model rather than
+described to it, so step one is a real look at real data.
+
+### Structure survives the handoff
+
+`PROMPT` can be a dict or a list. The opening step lists its keys with a look
+at each value, so the model indexes `PROMPT["reviews"]` instead of regexing a
+JSON blob back apart. Handing structure *down* works the same way:
 
 ```python
-answer = solve(prompt, client, config=config,
-               output_schema={"type": "object", "properties": {"total": {"type": "integer"}},
-                              "required": ["total"]})
+await gather_rlm(
+    [{"site": name, "rows": rows} for name, rows in by_site.items()],
+    instruction="Total the crates shipped.",
+)
 ```
 
-A JSON Schema dict, a plain type (`str`, `int`, `list`, ...), or a pydantic
-model/type (pydantic is only imported if you pass one). A `FINAL` that does
-not match is refused with the schema and what did not match; the loop
-continues rather than losing the run. The same `schema=` keyword works on
-`rlm(...)` and `gather_rlm(...)` for a child's own answer.
+Each child gets a real dict as its own `PROMPT`. Set
+`enable_structured_output: false` and every one of these becomes JSON text
+instead, which is the honest comparison when you want to measure whether the
+structure was worth anything.
+
+### Answers can be required to fit a shape
+
+```python
+answer = solve(prompt, client, config=config, output_schema={
+    "type": "object",
+    "properties": {"total": {"type": "integer"}, "per_site": {"type": "object"}},
+    "required": ["total", "per_site"],
+})
+```
+
+A JSON Schema dict, a bare type (`int`, `list`, ...), or a pydantic model —
+pydantic is only imported if you hand it one. A `FINAL` that does not fit is
+refused with the schema and every mismatch, and **the run continues**: the
+agent still has every variable it built, so it corrects the value rather than
+redoing the work. Children take the same `schema=`, so a fan-out can come back
+uniformly typed.
 
 ## Tools
 
-Pass functions by name; they are bound in the REPL of the root agent.
+Functions you pass by name are bound into the root agent's REPL:
 
 ```python
-def filter_short(items: list[str], max_len: int = 20) -> list[str]:
-    """Return only items shorter than max_len."""
-    return [x for x in items if len(x) < max_len]
+def days_since(date: str) -> int:
+    """Days between an ISO date and today."""
+    import datetime
+    return (datetime.date.today() - datetime.date.fromisoformat(date)).days
 
-solve(prompt, client, config=config, tools={"filter_short": filter_short})
+solve(prompt, client, config=config, tools={"days_since": days_since})
 ```
 
-- Add a description with `{"filter_short": {"tool": filter_short, "description": "..."}}`.
-- A non-callable value is installed as data.
-- Sub-agents get nothing unless the parent passes it:
-  `await rlm(text, tools=["filter_short"])`. Set `inherit_tools: true` to flip
-  that default.
-- Under `subprocess` and `wasm` a tool is rebuilt from its source: it must be a
-  module-level function with no closures, doing its own imports, returning
-  JSON-safe data. Under `in-process` any callable works.
-- A saved variable never silently replaces a tool of the same name; it is
-  parked beside it as `{name}_saved`.
+- Describe one with `{"days_since": {"tool": days_since, "description": "..."}}`.
+- Children inherit nothing by default. A parent grants explicitly with
+  `await rlm(piece, tools=["days_since"])`, or `inherit_tools: true` flips it.
+- On `subprocess` and `wasm` a tool is rebuilt from source inside the sandbox:
+  module-level, no closures, own imports, JSON-safe return. On `in-process`
+  any callable works, including bound methods and live objects.
 
-## Handing values into the REPL
+## Getting values in without spending context
 
-The `tools` mapping isn't only for functions — anything that isn't callable
-is bound into the namespace as-is, under its own name, so config the model
-needs but shouldn't have to ask an API for is just there when the run starts:
+Anything in `tools` that is not callable is bound as data under its own name.
+This is how settings, credentials-by-proxy, lookup tables and anything else
+the model needs reach the REPL without being pasted into a prompt:
 
 ```python
-solve(prompt, client, config=config, tools={"region": "eu-west-1", "cutoff_date": "2026-01-01"})
+solve(prompt, client, config=config, tools={
+    "region": "eu-west-1",
+    "sla_hours": {"gold": 4, "silver": 24},
+})
 ```
 
-Inside the REPL, `region` and `cutoff_date` are ordinary variables the model's
-code can read on its first cell — no round trip, and none of it goes through
-the prompt or the model's context. The same `tools=[...]` filter on `rlm(...)`
-and `gather_rlm(...)` decides whether a child sees it.
+`region` and `sla_hours` are ordinary variables in the model's first cell. No
+tokens spent describing them, no round trip to ask for them, and the same
+`tools=[...]` grant decides whether a child sees them. A value handed in this
+way also never gets silently overwritten by a restored session variable of the
+same name — the saved one is parked beside it as `{name}_saved`.
 
 ## Configuration
 
-`rlmness.yaml` in the working directory, `--config path`, or `Config(...)`.
+`rlmness.yaml` beside you, `--config path`, or `Config(...)` in Python.
+
+**Models and plumbing**
 
 | Field | Default | Meaning |
 |---|---|---|
-| `primary_agent` | required | root model |
-| `sub_agent` | `primary_agent` | model for children |
-| `max_depth` | 3 | how deep sub-agents nest |
-| `max_steps` | 20 | turns per agent |
-| `truncate_len` | 10000 | characters of cell output shown per step, kept from the end |
-| `max_cost` | 1.0 | dollars for the whole run |
-| `max_calls` | 2000 | calls across the run; backstop where no price is reported |
-| `max_completion_tokens` | 500000 | completion tokens across the run |
-| `max_prompt_tokens` | 200000 | one call's input plus output |
-| `max_seconds` | 1800 | wall clock for the run |
-| `max_concurrent` | 16 | pieces of one `gather_rlm` in flight |
-| `max_live` | 32 | agents alive at once across the tree |
-| `timeout` | 120 | seconds for one cell |
-| `max_tokens` | unset | a ceiling on one reply, sent with the request when set — some providers hold credit for the largest reply a request could produce, so this matters on a small key |
-| `api_timeout` | 60 | seconds for one read of a reply |
-| `api_deadline` | 600 | seconds for a whole reply, so one that trickles cannot outlast `api_timeout` forever |
-| `api_retry_after_max` | 60 | how long a provider's own `Retry-After` is obeyed, capped |
-| `api_max_retries` / `api_backoff` | 3 / 0.5 | retry policy for a failed call |
-| `temperature` / `reasoning_effort` | 0.1 / low | sampling |
-| `runtime` / `provider` | subprocess / openrouter | |
+| `primary_agent` | required | the root model |
+| `sub_agent` | `primary_agent` | the model children run on |
+| `runtime` | `subprocess` | `subprocess`, `wasm` or `in-process` |
+| `provider` | `openrouter` | `openrouter` or `deepseek` |
+| `temperature` / `reasoning_effort` | 0.1 / `low` | near-deterministic; reasoning the REPL never sees is reasoning that skipped the mechanism |
 
-Behaviour switches:
+**What a run may spend**
+
+Every limit is held on one budget object shared by the whole tree, so a child
+four levels down is spending the same allowance as the root, not a fresh copy
+of it.
+
+| Field | Default | Bounds |
+|---|---|---|
+| `max_cost` | 1.0 | dollars, whole run |
+| `max_calls` | 2000 | calls, whole run — the backstop where a provider reports no price |
+| `max_seconds` | 1800 | wall clock, whole run |
+| `max_completion_tokens` | 500000 | completion tokens, whole run |
+| `max_prompt_tokens` | 200000 | one call's input plus output — the ceiling that actually bounds context growth, since the conversation is resent every turn |
+| `max_steps` | 20 | turns per agent |
+| `max_depth` | 3 | how deep sub-agents nest |
+| `max_concurrent` | 16 | pieces of one `gather_rlm` in flight |
+| `max_live` | 32 | agents alive at once anywhere in the tree |
+| `timeout` | 120 | seconds for one cell |
+| `truncate_len` | 10000 | characters of a cell's output shown, kept from the end |
+
+**Talking to a provider**
+
+| Field | Default | Meaning |
+|---|---|---|
+| `api_timeout` | 60 | one read of a reply |
+| `api_deadline` | 600 | a whole reply — without it, a response trickling a few bytes at a time resets the read timeout forever |
+| `max_tokens` | unset | ceiling on one reply, sent with the request. Matters where a provider reserves credit for the largest reply a request *could* produce: unset, that reservation is the model's own maximum |
+| `api_retry_after_max` | 60 | how far a provider's own `Retry-After` is obeyed. A refusal that names a time is retried; one that names none is taken as final |
+| `api_max_retries` / `api_backoff` | 3 / 0.5 | retries and growth |
+
+**Switches, each there to be turned off and measured**
 
 | Field | Default | Effect |
 |---|---|---|
-| `enable_delegation` | true | bind `rlm` and `gather_rlm` |
-| `enable_step_banner` | true | show steps remaining once past halfway |
-| `enable_batching_guard` | true | refuse a hand-built fan-out over sub-agent calls and point to `gather_rlm` |
-| `enable_structured_output` | true | dict/list `PROMPT` and handoffs stay structured; `output_schema` is checked |
-| `enable_blind_final_guard` | false | hold a literal answer written in a cell that reads `PROMPT` |
-| `enable_first_look_guard` | false | refuse a first-step answer that never read `PROMPT` |
-| `inherit_tools` | false | children receive their parent's tools by default |
+| `enable_delegation` | true | bind `rlm` and `gather_rlm` at all |
+| `enable_structured_output` | true | dicts stay dicts; `output_schema` is enforced |
+| `enable_step_banner` | true | tell an agent its remaining steps once past halfway |
+| `enable_batching_guard` | true | refuse hand-rolled fan-outs (below) |
+| `enable_blind_final_guard` | false | hold a literal `FINAL` written in the same cell that first reads `PROMPT` |
+| `enable_first_look_guard` | false | refuse a first-step answer that never touched `PROMPT` |
+| `inherit_tools` | false | children get their parent's tools without being granted them |
 
-## Sandboxes
+## Where the code runs
 
-| `runtime` | Isolation | Notes |
+| `runtime` | Isolation | Cost |
 |---|---|---|
-| `subprocess` (default) | separate Python process | quickest to start |
-| `wasm` | Pyodide in one shared Node host | no network: `js`, `pyodide.http` are shut |
-| `in-process` | none | tools may be live objects; trusted code only |
+| `subprocess` (default) | its own Python process | ~0.2s to start, ~28MB per agent |
+| `wasm` | Pyodide, no network — `js` and `pyodide.http` are shut | ~1.5s first boot, ~45MB per extra sandbox in a shared host |
+| `in-process` | none | free; trusted code only, and the fan-out guard cannot hold here |
 
-The `wasm` runtime closes the documented ways out. Pyodide shares a JavaScript
-context with its host and is not a security boundary.
+`wasm` closes the documented ways out of the sandbox. Pyodide shares a
+JavaScript context with its host and was never built as a security boundary,
+so this is a seal against model-written code doing something careless, not
+against code trying to escape.
 
-Every fan-out — `asyncio.gather`, `wait`, `as_completed`, `create_task`,
-`ensure_future`, a `TaskGroup` — is refused if any piece of it is a sub-agent
-call, on `subprocess` and `wasm`: the message names `gather_rlm` and shows an
-example. `gather_rlm` itself keeps a fan-out inside `max_concurrent`, claims a
-slot per child, and stops the rest as soon as one fails, which a hand-built
-gather does none of. Turn it off with `enable_batching_guard: false`.
-`in-process` shares its event loop with the caller and cannot enforce this.
+**Fan-outs must go through `gather_rlm`.** `asyncio.gather`, `wait`,
+`as_completed`, `create_task`, `ensure_future` and `TaskGroup` are all refused
+if handed a sub-agent call, with a message naming the helper. Not pedantry:
+`gather_rlm` holds the fan-out inside `max_concurrent`, claims a live slot per
+child, and cancels the remainder the moment one fails. A hand-built gather
+does none of the three and nothing would have said so. `in-process` shares its
+event loop with the caller and cannot enforce it.
 
-## Resumable sessions
+## Sessions
 
-A session keeps the root agent's namespace and its earlier answers between
-questions. After every step, picklable variables are saved, functions and
-classes are saved as source, and imported modules by name. The next run
-restores them — including what was committed, noted or commented, so a
-resumed session remembers a name as fully as the run that built it did — and
-is shown the earlier questions, answers and a bounded view of the code that
-built them.
+A session carries the root agent's namespace and its answers between
+questions, so the second question can use what the first one built:
 
 ```bash
-rlmness --session ./notes "Load the logs and build an index by service"
-rlmness --session ./notes "Using the index: which service failed most?"
+rlmness --session ./notes "Parse the logs and index them by service"
+rlmness --session ./notes "Using that index — which service failed most?"
 ```
 
-```python
-from rlmness.session import Session
+Saved after every successful step, atomically, so a killed run resumes from
+its last one. Variables are pickled, functions and classes kept as source,
+modules by name, along with whatever the model committed, noted or commented
+about them — a resumed session knows a name as well as the run that created it
+did.
 
-book = Session.load("notes", "podcasts")      # notes/podcasts/state.json
-solve(transcripts, client, config=config, instruction="Build a guest index", session=book)
-solve("", client, config=config, instruction="Who was most optimistic?", session=book)
-
-book.variables   # what is kept
-book.answered    # earlier questions and answers, each linked to its trace
-```
-
-Where state lives:
-
-| | |
+| Target | State lives in |
 |---|---|
 | `--session file.json` | that file |
 | `--session dir` | `dir/state.json` |
 | `--session dir --session-id x` | `dir/x/state.json` |
-| `--session-ephemeral` / `Session()` | memory only, gone when the process exits |
+| `--session-ephemeral` | memory, gone at exit |
 
-Behaviour:
+Two runs pointed at one file do not clobber each other: whichever finds the
+file changed underneath it writes `state.1.json` instead, and any run loading
+the original names the strays sitting beside it, so nobody's work goes
+missing quietly. Sub-agents are always fresh — only the root agent persists.
 
-- Written after every successful step, atomically. A killed run resumes from its last step.
-- Two runs on one file do not overwrite each other: the one that finds the
-  file changed under it saves to `state.1.json` instead and says so — and the
-  run that loaded the original names every such file sitting beside it, so
-  that work is findable rather than only announced once.
-- Not a process clone. Open handles and generators are dropped and reported; large values are skipped unless `commit`ted.
-- The conversation is not carried, only the ledger, the code and the restored names, so a resumed prompt stays bounded.
-- `--session-no-code` hides earlier code.
-- A saved name never replaces a tool or helper of the same name; it is restored beside it as `name_saved`.
-- Sub-agents stay fresh. Only the root agent's state persists.
+## Watching and reading a run
 
-## Instructions
+Every run writes a JSONL trace and prints its path.
 
-`instruction` is shown to one agent only. A sub-agent gets one when its parent
-passes it:
-
-```python
-# inside the REPL
-amounts = await gather_rlm(chunks, instruction="Return only dollar amounts, as a JSON list.")
+```bash
+rlmness --dashboard "..."                     # live tree, code and namespace as it goes
+rlmness-viewlog traces/run_x.jsonl            # one run as a tree
+rlmness-viewlog traces/run_x.jsonl --tui      # the same, navigable
+rlmness-viewlog --session ./notes             # every question a session answered, and what each cost
+rlmness-viewlog --session ./notes --tui       # browse them, drill into any run, inspect memory
+rlmness-timeline traces/run_x.jsonl           # who was running when
 ```
 
-A child's own sub-agents start without it.
-
-## Progress
-
-Pass any object as `trace`. It receives `run_started`, `step`, `final`,
-`run_completed` and `run_failed` for the root and every sub-agent as they
-happen, each carrying `run_id`, `parent_run_id` and `depth`.
+In Python, pass anything as `trace` — it receives `run_started`, `step`,
+`final`, `run_completed` and `run_failed` for every agent, each carrying
+`run_id`, `parent_run_id` and `depth`. `Broadcast` fans one run out to several
+readers:
 
 ```python
-from rlmness import Journal
+from rlmness import Journal, solve
 from rlmness.events import Broadcast
 
 class Printer:
-    def step(self, *, step, depth=0, usage=None, **_):
+    def step(self, *, step, depth=0, **_):
         print(f"depth {depth} step {step}")
-    def final(self, result, **_):
-        pass
 
 solve(prompt, client, config=config, trace=Broadcast(Journal(), Printer()))
 ```
 
-## Logs
+## Measuring whether any of it helps
 
-Every CLI run writes a JSONL trace under `traces/` and prints its path.
-`Journal(path)` picks the file from Python.
-
-```bash
-rlmness-viewlog traces/run_xxx.jsonl        # one run, as a tree
-rlmness-viewlog traces/run_xxx.jsonl --tui  # the same, interactively
-
-rlmness-viewlog --session ./notes           # every question a session has answered,
-rlmness-viewlog --session ./notes --tui     # what each cost, and its own trace
-
-rlmness-timeline traces/run_xxx.jsonl       # who ran when
-rlmness --dashboard "..."                   # live tree while it runs
-```
-
-## Measuring a change
+Every switch above exists so it can be removed. The ablation runner runs a
+task set with a setting on and off and prints the spread:
 
 ```bash
-python -m evals.ablation --provider openrouter --model deepseek/deepseek-v4-flash --setting enable_step_banner
-python -m evals.ablation --provider openrouter --model deepseek/deepseek-v4-flash --tasks longbench:hotpotqa -n 5
+python -m evals.ablation --model deepseek/deepseek-v4-flash --setting enable_step_banner
+python -m evals.ablation --model deepseek/deepseek-v4-flash --tasks longbench:hotpotqa -n 5
 ```
 
-Runs each task with the setting on and off and prints the spread. `sanity`
-shows nothing broke; only `longbench` supports a claim that something improved.
+The `sanity` set is generated, costs nothing, and shows only that nothing
+broke — though its `ledger` tasks are the interesting ones, since the number
+asked for is a running total that appears nowhere in the text and so cannot be
+found by searching. `longbench` is what supports a claim that something got
+better.
 
 ## License
 
