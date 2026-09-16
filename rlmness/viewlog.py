@@ -193,6 +193,10 @@ def render_session(state: Path | str) -> str:
         f"kept      {len(book.variables)} variables, {len(book.functions)} functions, "
         f"{len(book.dropped)} dropped"
     )
+    for stray in book.strays:
+        # A run that found this file taken kept its work here instead. It is
+        # never loaded by name from the session, so this is where it surfaces.
+        lines.append(f"beside    {stray.name}  (another run's work; open it by name)")
     lines.append("")
 
     linked = 0
