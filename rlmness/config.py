@@ -56,7 +56,10 @@ class Config:
     max_seconds: float | None = None
     max_completion_tokens: int | None = None
     max_prompt_tokens: int | None = None
-    runtime: str = "subprocess"
+    # Sealed by default: the model's code has no network and no host files.
+    # Needs Node and `npm install`; the command falls back to subprocess, and
+    # says so, when those are missing and nobody asked for wasm by name.
+    runtime: str = "wasm"
     provider: str = "openrouter"
     api_max_retries: int = 3
     api_backoff: float = 0.5
