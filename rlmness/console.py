@@ -17,6 +17,10 @@ from .session import Session
 def _parse(argv):
     parser = argparse.ArgumentParser(prog="rlmness")
     parser.add_argument("query", nargs="?")
+    parser.add_argument(
+        "--setup", action="store_true",
+        help="install the wasm sandbox and write a starter config, then exit",
+    )
     parser.add_argument("--model")
     parser.add_argument("--instruction")
     parser.add_argument("--max-steps", type=int)
@@ -69,7 +73,7 @@ def _parse(argv):
     return parser.parse_args(argv)
 
 
-WASM_SETUP = "run `npm install` in the rlm-ness folder (needs Node 18+)"
+WASM_SETUP = "run `rlmness --setup` (needs Node 18+)"
 
 
 def wasm_ready() -> bool:
@@ -86,6 +90,12 @@ def available_runtimes(wasm_ok: bool | None = None) -> list[str]:
 
 
 def main(argv=None, *, backend=None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--setup" in argv:
+        from . import home
+
+        return home.setup()
     args = _parse(argv if argv is not None else sys.argv[1:])
 
     # No query and a terminal to draw on: open the dashboard and let the
