@@ -9,27 +9,31 @@ as `PROMPT`, the model writes code to work through it, and hands pieces to
 sub-agents of itself when a piece needs reading rather than searching. What a
 sub-agent returns lands back in the REPL as a plain value.
 
+## Install
+
+```bash
+pip install rlm-ness
+rlmness --setup
+export OPENROUTER_API_KEY=sk-or-...
+```
+
+`rlmness --setup` installs the sandbox the model's code runs in (needs
+[Node.js](https://nodejs.org) 18+) and writes a starter config to
+`~/.rlmness/rlmness.yaml`. Skip it and everything still works, on a less
+isolated runtime.
+
 ## Run it
 
 ```bash
-pip install -e .
-npm install                     # sandbox runtime, needs Node 18+
-export OPENROUTER_API_KEY=sk-or-...
-
 rlmness "How many r's are in strawberry?"
 cat server.log | rlmness --instruction "Which errors repeat most, and when?"
-rlmness --provider deepseek --model deepseek-chat "..."
+rlmness --model deepseek/deepseek-v4-flash "..."
+rlmness --provider deepseek "..."            # uses DEEPSEEK_API_KEY
 ```
-
-Models are set in `rlmness.yaml` (`primary_agent` for the root, `sub_agent` for
-the agents it spawns) or with `--model`. Keys come from the provider's own
-variable: `OPENROUTER_API_KEY` or `DEEPSEEK_API_KEY`.
 
 Run `rlmness` with no question to open the live screen and ask from there.
 
 ## Choose where the code runs
-
-Pick with `--runtime`, no code changes:
 
 ```bash
 rlmness --runtime wasm "..."          # default
@@ -37,28 +41,23 @@ rlmness --runtime subprocess "..."
 rlmness --runtime in-process "..."
 ```
 
-- **`wasm`** (default) — Python compiled to WebAssembly, hosted in Node. No
-  network and no access to your files, so it is safe on input you didn't write:
-  fetched pages, uploaded documents, other people's data. Needs `npm install`
-  once. Without it, `rlmness` runs on `subprocess` and tells you so.
-- **`subprocess`** — the model's code runs in its own Python process. Starts
-  faster, and can use any package you have installed. It can touch your
-  machine, so keep it for input you trust.
-- **`in-process`** — runs inside your own Python process. No isolation. For
-  trusted code where your tools need to be live objects.
+- **`wasm`** (default) — a WebAssembly sandbox with no network and no access to
+  your files. Safe on input you didn't write: fetched pages, uploaded
+  documents, other people's data. Set up by `rlmness --setup`; until then
+  `rlmness` uses `subprocess` and tells you so.
+- **`subprocess`** — a separate Python process. Starts faster and can use any
+  package you have installed, but can touch your machine. For input you trust.
+- **`in-process`** — inside your own Python process, no isolation. For trusted
+  code where your tools need to be live objects.
 
-To change the default, set it once:
+To change the default, set it once instead of passing the flag:
 
 ```bash
-export RLMNESS_RUNTIME=subprocess     # this shell
+export RLMNESS_RUNTIME=subprocess
 ```
 
-```yaml
-runtime: subprocess                   # rlmness.yaml, every run
-```
-
-On the live screen, a picker next to the question box does the same thing per
-question, and only lists runtimes that can start on your machine.
+or put `runtime: subprocess` in your config. On the live screen, a picker next
+to the question box switches it per question.
 
 ## Keep working across questions
 
@@ -67,15 +66,15 @@ rlmness --session ./notes "Parse the logs and index them by service"
 rlmness --session ./notes "Using that index, which service failed most?"
 ```
 
-The second question starts with everything the first one built. State is saved
-after every step, so an interrupted run picks up where it stopped.
-`--session-id` keeps several sessions in one folder, `--session-ephemeral` keeps
-one only for the life of the process.
+The second question starts with everything the first one built. Progress is
+saved after every step, so an interrupted run picks up where it stopped.
+`--session-id` keeps several sessions in one folder; `--session-ephemeral`
+keeps one only until the program exits.
 
 ## Watch a run
 
 ```bash
-pip install -e '.[tui]'
+pip install "rlm-ness[tui]"
 
 rlmness --dashboard "..."                   # live: agents, code, output, variables
 rlmness-viewlog traces/run_x.jsonl --tui    # replay a finished run
@@ -83,7 +82,8 @@ rlmness-viewlog ./notes --tui               # every question a session answered
 rlmness-timeline traces/run_x.jsonl         # which agent ran when
 ```
 
-Every run writes its trace under `traces/` and prints the path at the end.
+Each run saves a trace under `traces/` in the current folder and prints its
+path at the end.
 
 ## Use it from Python
 
@@ -105,24 +105,29 @@ answer = solve(
 print(answer.output, answer.usage.cost)
 ```
 
-- **`tools`** — functions become callable in the REPL; anything else (strings,
-  dicts, tables) becomes a plain variable the model can read.
-- **`output_schema`** — the answer must match this JSON Schema. A mismatch is
-  sent back to the model to fix, without losing its work.
-- **`PROMPT` can be a dict or list**, not just text, and sub-agents can be handed
-  dicts too.
-- **`runtime_factory`** — pick the runtime in code, e.g.
-  `from rlmness.wasm_runtime import WasmRuntime`.
+- **`tools`** — functions become callable in the REPL; other values (strings,
+  dicts, tables) become plain variables the model can read.
+- **`output_schema`** — the answer must match this JSON Schema. A mismatch goes
+  back to the model to fix, without losing its work.
+- **`prompt`** can be a dict or list as well as text.
+- **`Config(runtime="subprocess")`** picks the runtime; `load_config()` reads
+  the same config file the command uses.
 
 ## Configuration
 
-Everything lives in `rlmness.yaml`; `--config` points at another file. The
-settings most people touch:
+`rlmness` reads the first config it finds:
+
+1. the file given with `--config`
+2. `rlmness.yaml` in the current folder
+3. `~/.rlmness/rlmness.yaml` (move it with `RLMNESS_HOME`)
+
+`--model`, `--runtime` and `--provider` override the file for one run.
 
 | Setting | Default | |
 |---|---|---|
-| `primary_agent` / `sub_agent` | — | models for the root and its sub-agents |
-| `runtime` | `wasm` | where the code runs |
+| `primary_agent` | — | model for the root agent (required) |
+| `sub_agent` | same as `primary_agent` | model for the agents it starts |
+| `runtime` | `wasm` | `wasm`, `subprocess` or `in-process` |
 | `provider` | `openrouter` | `openrouter` or `deepseek` |
 | `max_cost` | `1.0` | dollar limit for a whole run |
 | `max_seconds` | `1800` | time limit for a whole run |
@@ -131,37 +136,33 @@ settings most people touch:
 | `max_concurrent` | `16` | sub-agents running at once in one batch |
 | `max_tokens` | unset | cap on one reply; set it if your key has little credit |
 
-Limits apply to the whole run, sub-agents included. The file lists every other
-setting with its default.
+<details>
+<summary>All settings</summary>
 
-## Layout
+| Setting | Default | |
+|---|---|---|
+| `max_calls` | `2000` | model calls in a whole run |
+| `max_completion_tokens` | `500000` | output tokens in a whole run |
+| `max_prompt_tokens` | `200000` | input plus output of a single call |
+| `max_live` | `32` | agents alive at once across the whole run |
+| `timeout` | `120` | seconds one code cell may run |
+| `truncate_len` | `10000` | characters of a cell's output the model sees |
+| `api_timeout` | `60` | seconds to wait on each read from the provider |
+| `api_deadline` | `600` | seconds for a whole reply |
+| `api_max_retries` | `3` | retries on a failed call |
+| `api_backoff` | `0.5` | seconds before the first retry, doubling after |
+| `api_retry_after_max` | `60` | longest wait the provider may ask for between retries |
+| `temperature` | `0.1` | sampling temperature |
+| `reasoning_effort` | `low` | reasoning level, where the model supports it |
+| `inherit_tools` | `false` | sub-agents get their parent's tools without being given them |
+| `enable_delegation` | `true` | let agents start sub-agents |
+| `enable_structured_output` | `true` | keep dicts and lists as they are; check `output_schema` |
+| `enable_step_banner` | `true` | tell an agent how many turns it has left |
+| `enable_batching_guard` | `true` | require sub-agents to be started in batches through `gather_rlm` |
+| `enable_blind_final_guard` | `false` | hold back an answer written before the data was read |
+| `enable_first_look_guard` | `false` | refuse a first-turn answer that never looked at the input |
 
-```
-rlmness/
-  console.py         the rlmness command
-  engine.py          the loop: ask the model, run its code, feed back, repeat
-  briefing.py        what the model is told
-  providers.py       OpenRouter and DeepSeek clients, retries, deadlines
-  config.py          rlmness.yaml
-  limits.py          cost, time, call and depth limits shared across a run
-  runtime.py         subprocess runtime
-  cell_runner.py       its side of the process
-  wasm_runtime.py    WebAssembly runtime
-  wasm_guest.mjs       its side, in Node
-  in_process.py      in-process runtime
-  tools.py           turning your functions and values into REPL names
-  schema.py          output schema checks
-  session.py         sessions: save, restore, conflicts
-  session_guest.py     the REPL side of saving
-  events.py          run events, shared by every viewer
-  journal.py         the JSONL trace
-  dashboard.py       live screen
-  session_view.py    session browser
-  viewlog.py         rlmness-viewlog
-  timeline.py        rlmness-timeline
-  namespace.py       summarising REPL variables for display
-evals/               comparing settings on generated and LongBench tasks
-```
+</details>
 
 ## License
 
