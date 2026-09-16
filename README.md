@@ -1,9 +1,17 @@
 # rlm-ness
 
-A Recursive Language Model runtime. The input never goes into the model's
-context. It lives in a Python REPL as `PROMPT`; the model writes code to look
-at it, and hands pieces to sub-agents of itself when a piece needs judgement
-rather than string work.
+A runtime for Recursive Language Models, an inference technique described in
+the RLM paper. Instead of putting a prompt directly in an LLM's context, RLM
+hands it to the model as a variable inside an external REPL. The model writes
+code to explore, slice and transform it, and can recursively call sub-agents
+of itself on the pieces that need judgement rather than string work.
+
+The recursion is what makes it more than a wrapper around chunking: a
+sub-agent's answer never gets dumped back into its parent's context as more
+text to re-read. It comes back as an ordinary value in the REPL — a string, a
+number, a dict — bound to a name the parent's own code already chose. So a
+gather over ten pieces costs the parent one variable holding ten results, not
+ten replies' worth of tokens.
 
 | In the REPL | What it does |
 |---|---|
@@ -125,6 +133,60 @@ solve(prompt, client, config=config, tools={"filter_short": filter_short})
 - A saved variable never silently replaces a tool of the same name; it is
   parked beside it as `{name}_saved`.
 
+## Handing values into the REPL
+
+The `tools` mapping isn't only for functions — anything that isn't callable
+is bound into the namespace as-is, under its own name, so config the model
+needs but shouldn't have to ask an API for is just there when the run starts:
+
+```python
+solve(prompt, client, config=config, tools={"region": "eu-west-1", "cutoff_date": "2026-01-01"})
+```
+
+Inside the REPL, `region` and `cutoff_date` are ordinary variables the model's
+code can read on its first cell — no round trip, and none of it goes through
+the prompt or the model's context. The same `tools=[...]` filter on `rlm(...)`
+and `gather_rlm(...)` decides whether a child sees it.
+
+## Configuration
+
+`rlmness.yaml` in the working directory, `--config path`, or `Config(...)`.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `primary_agent` | required | root model |
+| `sub_agent` | `primary_agent` | model for children |
+| `max_depth` | 3 | how deep sub-agents nest |
+| `max_steps` | 20 | turns per agent |
+| `truncate_len` | 10000 | characters of cell output shown per step, kept from the end |
+| `max_cost` | 1.0 | dollars for the whole run |
+| `max_calls` | 2000 | calls across the run; backstop where no price is reported |
+| `max_completion_tokens` | 500000 | completion tokens across the run |
+| `max_prompt_tokens` | 200000 | one call's input plus output |
+| `max_seconds` | 1800 | wall clock for the run |
+| `max_concurrent` | 16 | pieces of one `gather_rlm` in flight |
+| `max_live` | 32 | agents alive at once across the tree |
+| `timeout` | 120 | seconds for one cell |
+| `max_tokens` | unset | a ceiling on one reply, sent with the request when set — some providers hold credit for the largest reply a request could produce, so this matters on a small key |
+| `api_timeout` | 60 | seconds for one read of a reply |
+| `api_deadline` | 600 | seconds for a whole reply, so one that trickles cannot outlast `api_timeout` forever |
+| `api_retry_after_max` | 60 | how long a provider's own `Retry-After` is obeyed, capped |
+| `api_max_retries` / `api_backoff` | 3 / 0.5 | retry policy for a failed call |
+| `temperature` / `reasoning_effort` | 0.1 / low | sampling |
+| `runtime` / `provider` | subprocess / openrouter | |
+
+Behaviour switches:
+
+| Field | Default | Effect |
+|---|---|---|
+| `enable_delegation` | true | bind `rlm` and `gather_rlm` |
+| `enable_step_banner` | true | show steps remaining once past halfway |
+| `enable_batching_guard` | true | refuse a hand-built fan-out over sub-agent calls and point to `gather_rlm` |
+| `enable_structured_output` | true | dict/list `PROMPT` and handoffs stay structured; `output_schema` is checked |
+| `enable_blind_final_guard` | false | hold a literal answer written in a cell that reads `PROMPT` |
+| `enable_first_look_guard` | false | refuse a first-step answer that never read `PROMPT` |
+| `inherit_tools` | false | children receive their parent's tools by default |
+
 ## Sandboxes
 
 | `runtime` | Isolation | Notes |
@@ -203,45 +265,6 @@ amounts = await gather_rlm(chunks, instruction="Return only dollar amounts, as a
 ```
 
 A child's own sub-agents start without it.
-
-## Configuration
-
-`rlmness.yaml` in the working directory, `--config path`, or `Config(...)`.
-
-| Field | Default | Meaning |
-|---|---|---|
-| `primary_agent` | required | root model |
-| `sub_agent` | `primary_agent` | model for children |
-| `max_depth` | 3 | how deep sub-agents nest |
-| `max_steps` | 20 | turns per agent |
-| `truncate_len` | 10000 | characters of cell output shown per step, kept from the end |
-| `max_cost` | 1.0 | dollars for the whole run |
-| `max_calls` | 2000 | calls across the run; backstop where no price is reported |
-| `max_completion_tokens` | 500000 | completion tokens across the run |
-| `max_prompt_tokens` | 200000 | one call's input plus output |
-| `max_seconds` | 1800 | wall clock for the run |
-| `max_concurrent` | 16 | pieces of one `gather_rlm` in flight |
-| `max_live` | 32 | agents alive at once across the tree |
-| `timeout` | 120 | seconds for one cell |
-| `max_tokens` | unset | a ceiling on one reply, sent with the request when set — some providers hold credit for the largest reply a request could produce, so this matters on a small key |
-| `api_timeout` | 60 | seconds for one read of a reply |
-| `api_deadline` | 600 | seconds for a whole reply, so one that trickles cannot outlast `api_timeout` forever |
-| `api_retry_after_max` | 60 | how long a provider's own `Retry-After` is obeyed, capped |
-| `api_max_retries` / `api_backoff` | 3 / 0.5 | retry policy for a failed call |
-| `temperature` / `reasoning_effort` | 0.1 / low | sampling |
-| `runtime` / `provider` | subprocess / openrouter | |
-
-Behaviour switches:
-
-| Field | Default | Effect |
-|---|---|---|
-| `enable_delegation` | true | bind `rlm` and `gather_rlm` |
-| `enable_step_banner` | true | show steps remaining once past halfway |
-| `enable_batching_guard` | true | refuse a hand-built fan-out over sub-agent calls and point to `gather_rlm` |
-| `enable_structured_output` | true | dict/list `PROMPT` and handoffs stay structured; `output_schema` is checked |
-| `enable_blind_final_guard` | false | hold a literal answer written in a cell that reads `PROMPT` |
-| `enable_first_look_guard` | false | refuse a first-step answer that never read `PROMPT` |
-| `inherit_tools` | false | children receive their parent's tools by default |
 
 ## Progress
 
