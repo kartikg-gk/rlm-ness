@@ -190,11 +190,14 @@ be done in this namespace, with code and with what you can read.\
 """
 
 
+_SEALED_TOOLS = """
+The tools you have been given run in here too, so the same holds for them.
+"""
+
 _SEALED = """
 Your code runs inside WebAssembly. There is no network and no host filesystem.
 A module that reaches for either still imports — it fails when you call it —
-and a tool you have been given is bound by this too, so work from PROMPT and
-what is already here rather than fetching or reading.
+so work from PROMPT and what is already here rather than fetching or reading.
 
 Third-party packages are not installed: no pandas, no numpy, no requests. The
 Python standard library is, so parse with it: `csv` for CSV or TSV,
@@ -324,6 +327,8 @@ def system_prompt(can_recurse: bool = False, tools=(), sealed: bool = False,
     parts.append(_GUIDANCE if can_recurse else _ALONE)
     if sealed:
         parts.append(_SEALED)
+        if tools:
+            parts.append(_SEALED_TOOLS)
     parts.append(_tool_section(tools))
     return "".join(parts)
 
