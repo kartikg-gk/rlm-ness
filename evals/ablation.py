@@ -106,6 +106,8 @@ def _once(task: Task, config: Config, provider: str) -> Outcome:
             provider,
             temperature=config.temperature,
             reasoning_effort=config.reasoning_effort,
+            max_tokens=config.max_tokens,
+            retry_after_max=config.api_retry_after_max,
             timeout=config.api_timeout,
         ),
         flags,

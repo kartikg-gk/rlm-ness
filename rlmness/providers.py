@@ -164,6 +164,10 @@ class ChatClient:
         backoff: float = 0.5,
         temperature: float | None = None,
         reasoning_effort: str | None = None,
+        max_tokens: int | None = None,
+        # However long a provider says to wait, one refusal must not stall a
+        # run for minutes while a fan-out waits on it.
+        retry_after_max: float = 60.0,
     ):
         self.provider = provider or type(self).provider
         key = api_key or os.environ.get(self.provider.env_var)
@@ -175,6 +179,8 @@ class ChatClient:
         self.backoff = backoff
         self.temperature = temperature
         self.reasoning_effort = reasoning_effort
+        self.max_tokens = max_tokens
+        self.retry_after_max = retry_after_max
         self._reasoning_refused = False
         self._sleep = time.sleep
 
@@ -191,11 +197,27 @@ class ChatClient:
             body["temperature"] = self.temperature
         if self.reasoning_effort and not self._reasoning_refused:
             body["reasoning"] = {"effort": self.reasoning_effort}
+        if self.max_tokens is not None:
+            body["max_tokens"] = self.max_tokens
         return body
+
+    def _retry_after(self, response: httpx.Response) -> float | None:
+        """How long the provider asked us to wait, if it said so in seconds.
+
+        The header also has a date form, which is not read: a clock skewed
+        against the provider's turns it into an arbitrary wait, and the
+        ordinary backoff is a safer answer than a wrong one.
+        """
+        try:
+            seconds = float(response.headers.get("Retry-After", ""))
+        except ValueError:
+            return None
+        return min(max(seconds, 0.0), self.retry_after_max)
 
     def _post(self, messages: Sequence[Message], model: str) -> httpx.Response:
         for attempt in range(self.max_retries + 1):
             last = attempt == self.max_retries
+            delay = self.backoff * 2**attempt
             try:
                 response = self.client.post(
                     self.provider.endpoint,
@@ -222,7 +244,13 @@ class ChatClient:
                     # setting that is an optimisation, not a requirement.
                     self._reasoning_refused = True
                     continue
-                if response.status_code not in RETRIABLE_STATUS or last:
+                wait = self._retry_after(response)
+                # A refusal that names a time is one the provider expects to
+                # pass -- credit held for requests already in flight, most of
+                # all. One that names none is a verdict on this request, and
+                # asking again only repeats it.
+                retriable = response.status_code in RETRIABLE_STATUS or wait is not None
+                if not retriable or last:
                     if response.is_error:
                         # The status alone says a request was refused, not
                         # why. The provider's own words are in the body, and
@@ -235,7 +263,8 @@ class ChatClient:
                             response=response,
                         )
                     return response
-            self._sleep(self.backoff * 2**attempt)
+                delay = wait if wait is not None else delay
+            self._sleep(delay)
         raise AssertionError("unreachable")
 
     def complete(self, messages: Sequence[Message], *, model: str) -> tuple[str, Spend]:
