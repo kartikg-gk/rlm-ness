@@ -15,16 +15,41 @@ CHECKOUT = Path(__file__).resolve().parents[1]
 PYODIDE = "^314.0.6"
 
 STARTER = """\
-# Models for the root agent and the sub-agents it starts.
+# Models. The root agent answers the question; sub-agents read the pieces it
+# hands out, so a cheaper model there is what makes delegating worth doing.
 primary_agent: z-ai/glm-5
 sub_agent: minimax/minimax-m2.5
 
-# wasm, subprocess or in-process
-runtime: wasm
+# openrouter, anthropic or deepseek. Each reads its own API key from your
+# shell — OPENROUTER_API_KEY, ANTHROPIC_API_KEY or DEEPSEEK_API_KEY.
 provider: openrouter
 
+# Where the model's code runs: wasm (sealed, needs `rlmness --setup`),
+# subprocess (faster, can reach your machine) or in-process (no isolation).
+runtime: wasm
+
+# What one run may spend, sub-agents included.
 max_cost: 1.0
 max_seconds: 1800
+max_steps: 20
+max_depth: 3
+
+# Uncomment anything below to change it.
+
+# max_concurrent: 16          # sub-agents running at once in one batch
+# max_tokens:                 # cap on one reply; set it on a low-credit key
+# truncate_len: 10000         # characters of a cell's output the model sees
+# timeout: 120                # seconds one cell may run
+# temperature: 0.1
+# reasoning_effort: low
+
+# Ask before an agent hands a sub-agent most of its own input.
+# enable_handoff_guard: true
+# handoff_min_chars: 5000
+# handoff_share: 0.6
+
+# enable_delegation: true     # let agents start sub-agents at all
+# enable_step_banner: true    # tell an agent how many turns it has left
 """
 
 
