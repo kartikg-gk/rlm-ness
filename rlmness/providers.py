@@ -25,8 +25,13 @@ OPENROUTER = Provider(
 DEEPSEEK = Provider(
     "deepseek", "https://api.deepseek.com/chat/completions", "DEEPSEEK_API_KEY"
 )
+ANTHROPIC = Provider(
+    "anthropic", "https://api.anthropic.com/v1/messages", "ANTHROPIC_API_KEY"
+)
 
-PROVIDERS = {provider.name: provider for provider in (OPENROUTER, DEEPSEEK)}
+PROVIDERS = {
+    provider.name: provider for provider in (OPENROUTER, DEEPSEEK, ANTHROPIC)
+}
 
 
 class MissingApiKey(Exception):
@@ -190,6 +195,9 @@ class ChatClient:
         self._sleep = time.sleep
         self._now = time.monotonic
 
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_key}"}
+
     def _body(self, messages: Sequence[Message], model: str) -> dict:
         """The request, carrying only the knobs that were actually set.
 
@@ -216,7 +224,7 @@ class ChatClient:
         stream is served the old way rather than refused -- the bound is worth
         having, but not at the price of the caller that passes its own client.
         """
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = self._headers()
         if self.deadline is None or not hasattr(self.client, "stream"):
             return self.client.post(self.provider.endpoint, headers=headers, json=body)
         limit = self._now() + self.deadline
@@ -339,7 +347,73 @@ class DeepSeekClient(ChatClient):
     provider = DEEPSEEK
 
 
+class AnthropicClient(ChatClient):
+    """The Messages API, which is not shaped like the others.
+
+    The system prompt travels beside the conversation rather than inside it,
+    a reply ceiling is required rather than optional, the answer arrives as
+    blocks rather than one string, and no price is ever reported — which the
+    budget already reads as unknown rather than free.
+    """
+
+    provider = ANTHROPIC
+    version = "2023-06-01"
+    # Required by the API, so something has to be sent. Large enough for a
+    # cell of code and the thinking around it; `max_tokens` overrides it.
+    DEFAULT_MAX_TOKENS = 16000
+
+    def _headers(self) -> dict:
+        return {"x-api-key": self.api_key, "anthropic-version": self.version}
+
+    def _body(self, messages: Sequence[Message], model: str) -> dict:
+        spoken = [m for m in messages if m.get("role") != "system"]
+        system = "\n\n".join(
+            m.get("content", "") for m in messages if m.get("role") == "system"
+        )
+        body: dict = {
+            "model": model,
+            "messages": [dict(m) for m in spoken],
+            "max_tokens": self.max_tokens or self.DEFAULT_MAX_TOKENS,
+        }
+        if system:
+            body["system"] = system
+        if self.temperature is not None:
+            body["temperature"] = self.temperature
+        return body
+
+    def complete(self, messages: Sequence[Message], *, model: str):
+        payload = self._post(messages, model).json()
+        blocks = payload.get("content") or []
+        text = "\n".join(
+            b.get("text", "") for b in blocks if b.get("type") == "text"
+        )
+        thinking = "\n".join(
+            b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
+        )
+        raw = payload.get("usage") or {}
+        cached = _number(raw.get("cache_read_input_tokens"))
+        built = _number(raw.get("cache_creation_input_tokens"))
+        # Cached and freshly cached tokens are input that was read but counted
+        # apart, so a total that leaves them out understates the call.
+        prompt = int(raw.get("input_tokens", 0) or 0) + int(cached or 0) + int(built or 0)
+        completion = int(raw.get("output_tokens", 0) or 0)
+        usage = Spend(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=prompt + completion,
+            cost=None,
+            cached_tokens=int(cached) if cached is not None else None,
+            reasoning_tokens=None,
+        )
+        return text, usage, thinking or None
+
+
 def make_client(name: str, **options) -> ChatClient:
+    # A provider whose API differs in shape has a class of its own; the rest
+    # share the OpenAI-shaped one and differ only in where they live.
+    shaped = {"anthropic": AnthropicClient}
+    if name in shaped:
+        return shaped[name](**options)
     return ChatClient(provider=PROVIDERS[name], **options)
 
 
