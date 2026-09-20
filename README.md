@@ -1,40 +1,53 @@
 # rlm-ness
 
-A **Recursive Language Model** runtime, from the paper
+A Python implementation of Recursive Language Models, from the paper
 [Recursive Language Models](https://arxiv.org/abs/2512.24601) (Zhang, Kraska &
-Khattab).
+Khattab), running the model's code in Node and Pyodide.
 
-Your input is never pasted into the model's context. It sits in a Python REPL
-as `PROMPT`, the model writes code to work through it, and hands pieces to
-sub-agents of itself when a piece needs reading rather than searching. What a
-sub-agent returns lands back in the REPL as a plain value.
+Your input never enters the model's context. It sits in a Python REPL as
+`PROMPT`; the model writes code to work through it and hands pieces to
+sub-agents of itself, whose answers come back as plain values in the REPL.
 
 ## Install
 
 ```bash
 pip install rlm-ness
-rlmness --setup
 export OPENROUTER_API_KEY=sk-or-...        # or ANTHROPIC_API_KEY, DEEPSEEK_API_KEY
+rlmness "How many r's are in strawberry?" --model z-ai/glm-5
 ```
 
-`rlmness --setup` installs the sandbox the model's code runs in (needs
-[Node.js](https://nodejs.org) 18+) and writes a starter config to
-`~/.rlmness/rlmness.yaml`. Skip it and everything still works, on a less
-isolated runtime.
+That is the whole install. Nothing else is required, and no config file is
+needed.
+
+**Optional:** `rlmness --setup` installs the WebAssembly sandbox the model's
+code can run in — a one-time download that needs [Node.js](https://nodejs.org)
+18+. Until you run it, `rlmness` runs the code in a subprocess instead and
+says so. It also leaves a fully commented `rlmness.yaml` in `~/.rlmness` if
+you would rather edit settings than pass flags.
 
 ## Run it
 
 ```bash
-rlmness "How many r's are in strawberry?"
-rlmness --input-file server.log "Which errors repeat most, and when?"
-cat server.log | rlmness --instruction "Which errors repeat most, and when?"
-rlmness --model deepseek/deepseek-v4-flash "..."
-rlmness --provider anthropic "..."           # or deepseek; each reads its own key
+rlmness "How many r's are in strawberry?" --model z-ai/glm-5
+
+# a file as the data, the question stays separate
+rlmness "Which errors repeat most, and when?" --input-file server.log --model z-ai/glm-5
+
+# or pipe it in
+cat server.log | rlmness --instruction "Which errors repeat most?" --model z-ai/glm-5
+
+# a cheaper model for the sub-agents the root hands pieces to
+rlmness "..." --model z-ai/glm-5 --sub-model minimax/minimax-m2.5
 ```
 
-`--input-file` takes the data and the question stays separate. A `.json`,
-`.jsonl` or `.yaml` file arrives as the data it describes; anything else
-arrives as text for the model to slice.
+A model is never guessed for you, since it decides what a run costs: pass
+`--model`, or set `primary_agent` in a config file and drop the flag.
+
+`--input-file` parses by extension — `.json`, `.jsonl`, `.yaml` arrive as the
+data they describe, anything else as text the model slices itself.
+
+`--provider anthropic` or `--provider deepseek` switches API; each reads its
+own key. Run `rlmness --help` for the rest.
 
 Run `rlmness` with no question to open the live screen and ask from there.
 
@@ -48,8 +61,8 @@ rlmness --runtime in-process "..."
 
 - **`wasm`** (default) — a WebAssembly sandbox with no network and no access to
   your files. Safe on input you didn't write: fetched pages, uploaded
-  documents, other people's data. Set up by `rlmness --setup`; until then
-  `rlmness` uses `subprocess` and tells you so.
+  documents, other people's data. Needs `rlmness --setup`; until then runs
+  fall back to `subprocess` and say so.
 - **`subprocess`** — a separate Python process. Starts faster and can use any
   package you have installed, but can touch your machine. For input you trust.
 - **`in-process`** — inside your own Python process, no isolation. For trusted
@@ -92,30 +105,24 @@ path at the end.
 
 ## Configuration
 
-`rlmness --setup` writes `~/.rlmness/rlmness.yaml`, with every setting in it
-and a comment on what each one does. Change it there, or keep a
-`rlmness.yaml` beside your work for one project.
+Optional — every setting can be passed as a flag. A config file just saves
+repeating them:
 
-Which file is used, first one found:
+```yaml
+# rlmness.yaml
+primary_agent: z-ai/glm-5
+sub_agent: minimax/minimax-m2.5
+max_cost: 1.0
+```
 
-1. the file given with `--config`
-2. `rlmness.yaml` in the current folder
-3. `~/.rlmness/rlmness.yaml` (move it with `RLMNESS_HOME`)
+The first of these that exists is used, and flags override it for one run:
 
-`--model`, `--runtime` and `--provider` override the file for a single run.
+1. `--config <path>`
+2. `./rlmness.yaml`
+3. `~/.rlmness/rlmness.yaml`
 
-The settings worth knowing about:
-
-| Setting | Default | |
-|---|---|---|
-| `primary_agent` | — | model for the root agent (required) |
-| `sub_agent` | same as `primary_agent` | model for the agents it starts |
-| `provider` | `openrouter` | `openrouter`, `anthropic` or `deepseek` |
-| `runtime` | `wasm` | where the model's code runs |
-| `max_cost` | `1.0` | dollar limit for a whole run |
-| `max_seconds` | `1800` | time limit for a whole run |
-| `max_steps` | `20` | turns each agent gets |
-| `max_depth` | `3` | how deeply sub-agents can nest |
+Write either file yourself, or let `rlmness --setup` drop a commented one in
+`~/.rlmness` for you.
 
 ## Use it from Python
 
