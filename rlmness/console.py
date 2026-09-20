@@ -22,7 +22,11 @@ def _parse(argv):
         "--setup", action="store_true",
         help="install the wasm sandbox and write a starter config, then exit",
     )
-    parser.add_argument("--model")
+    parser.add_argument("--model", help="the model the root agent runs on")
+    parser.add_argument(
+        "--sub-model",
+        help="the model its sub-agents run on; defaults to --model",
+    )
     parser.add_argument("--instruction")
     parser.add_argument(
         "--input-file",
@@ -140,6 +144,8 @@ def main(argv=None, *, backend=None) -> int:
             overrides["max_steps"] = args.max_steps
         if args.max_depth is not None:
             overrides["max_depth"] = args.max_depth
+        if args.sub_model:
+            overrides["sub_agent"] = args.sub_model
         if overrides:
             config = dataclasses.replace(config, **overrides)
         if config.runtime == "wasm" and not wasm_ready():
