@@ -67,7 +67,7 @@ def _pump():
             message = _read()
         except (EOFError, ValueError):
             break
-        if message.get("op") == "bridge_result":
+        if message.get("op") == "bridge_reply":
             with _PENDING_LOCK:
                 future = _PENDING.pop(message.get("_id"), None)
             if future is not None:
@@ -95,7 +95,7 @@ def _pump():
 # cell -- a self-correction (a later FINAL call) overwrites this the same way
 # reassigning any other variable would, and a mistake after FINAL is reported
 # as an error without losing the answer that was already given.
-_outcome = {"has_final": False, "final": None}
+_outcome = {"final_given": False, "final": None}
 
 
 _next_id = 0
@@ -265,9 +265,9 @@ async def _drive(pending):
         _LOOP = None
 
 
-def _exec_cell(code, namespace):
+def _run_cell(code, namespace):
     buffer = io.StringIO()
-    _outcome["has_final"] = False
+    _outcome["final_given"] = False
     _outcome["final"] = None
     error = None
     try:
@@ -285,7 +285,7 @@ def _exec_cell(code, namespace):
         "op": "result",
         "stdout": buffer.getvalue(),
         "final": _outcome["final"],
-        "has_final": _outcome["has_final"],
+        "final_given": _outcome["final_given"],
         "error": error,
     }
 
@@ -302,7 +302,7 @@ def main():
     _install_batch_guard(batched)
 
     def FINAL(answer=None):
-        _outcome["has_final"] = True
+        _outcome["final_given"] = True
         _outcome["final"] = answer
 
     namespace["FINAL"] = FINAL
@@ -357,7 +357,7 @@ def main():
             continue
         if operation != "exec":
             continue
-        _write(_exec_cell(command.get("code", ""), namespace))
+        _write(_run_cell(command.get("code", ""), namespace))
 
 
 if __name__ == "__main__":

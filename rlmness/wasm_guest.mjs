@@ -46,10 +46,10 @@ PROMPT = json.loads(_PROMPT_JSON)
 # each cell runs, read after it finishes rather than raised, so code written
 # after FINAL runs the same as any other code and a later FINAL call
 # overwrites an earlier one the same way reassigning a variable would.
-_outcome = {"has_final": False, "final": None}
+_outcome = {"final_given": False, "final": None}
 
 def FINAL(value=None):
-    _outcome["has_final"] = True
+    _outcome["final_given"] = True
     _outcome["final"] = value
 
 # Helpers whose single call must not be gathered by hand, and the code objects
@@ -173,7 +173,7 @@ def _install_summariser(source):
 _session = {}
 _session_owned = set()
 
-def _install_session(source, state_json):
+def _install_session(source, session_state):
     if not source:
         return json.dumps([])
     exec(source, _session)
@@ -182,7 +182,7 @@ def _install_session(source, state_json):
     # the machinery lives alongside the cell, so it has to say so.
     _session_owned.update(globals())
     globals()["commit"] = _session["commit"]
-    state = json.loads(state_json) if state_json else None
+    state = json.loads(session_state) if session_state else None
     if not state:
         return json.dumps([])
     # The same set serves both directions: names already here are the
@@ -212,9 +212,9 @@ def _snapshot():
     except Exception:
         return json.dumps([])
 
-async def _exec_cell(src):
+async def _run_cell(src):
     buf = io.StringIO()
-    _outcome["has_final"] = False
+    _outcome["final_given"] = False
     _outcome["final"] = None
     error = None
     try:
@@ -229,7 +229,7 @@ async def _exec_cell(src):
         {
             "stdout": buf.getvalue(),
             "final": _outcome["final"],
-            "has_final": _outcome["has_final"],
+            "final_given": _outcome["final_given"],
             "error": error,
         },
         default=str,
@@ -305,7 +305,7 @@ async function handle(msg) {
 
   if (msg.op === "exec") {
     box.py.globals.set("_CELL_SRC", msg.code ?? "");
-    const resultJson = await box.py.runPythonAsync("await _exec_cell(_CELL_SRC)");
+    const resultJson = await box.py.runPythonAsync("await _run_cell(_CELL_SRC)");
     send({ sid, op: "result", ...JSON.parse(resultJson) });
     return;
   }
@@ -341,7 +341,7 @@ lines.on("line", (line) => {
   // A bridge result is handed straight to the promise waiting for it, never
   // queued behind an exec — that is what lets an awaited bridge resolve while
   // the cell that called it is still running.
-  if (msg.op === "bridge_result") {
+  if (msg.op === "bridge_reply") {
     const box = sandboxes.get(msg.sid);
     const resolve = box && box.pending.get(msg._id);
     if (resolve) {
@@ -361,7 +361,7 @@ lines.on("line", (line) => {
   const box = sandboxes.get(msg.sid);
   if (!box) return;
   box.chain = box.chain.then(() => handle(msg)).catch((error) => {
-    send({ sid: msg.sid, op: "result", stdout: "", final: null, has_final: false,
+    send({ sid: msg.sid, op: "result", stdout: "", final: null, final_given: false,
            error: String((error && error.stack) || error) });
   });
 });

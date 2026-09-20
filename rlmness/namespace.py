@@ -44,7 +44,7 @@ def _preview(value, width):
     try:
         text = repr(value)
     except Exception as error:
-        return "<unreprable: %s>" % type(error).__name__
+        return "<unshowable: %s>" % type(error).__name__
     text = " ".join(text.split())
     if len(text) > width:
         return text[: width - 1] + "…"
