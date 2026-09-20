@@ -246,7 +246,7 @@ def sweep(namespace, code=None, skip=()):
             dropped[name] = reason
             continue
         variables[name] = {
-            "pickle_b64": base64.b64encode(blob).decode(),
+            "packed_value": base64.b64encode(blob).decode(),
             "type": type(value).__name__,
             "preview": _preview(value),
             "comment": _state.comments.get(name),
@@ -306,7 +306,7 @@ def restore(namespace, state, taken=()):
     for name, meta in (state.get("variables") or {}).items():
         target = f"{name}_saved" if name in reserved else name
         try:
-            namespace[target] = pickle.loads(base64.b64decode(meta["pickle_b64"]))
+            namespace[target] = pickle.loads(base64.b64decode(meta["packed_value"]))
         except Exception:
             failed.append(name)
             continue

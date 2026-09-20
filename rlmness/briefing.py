@@ -36,7 +36,7 @@ receive it as text. To learn anything about it, you write code that inspects it
 and read the output.
 
 Each turn:
-  - Reply with exactly one fenced Python block and nothing else that matters.
+  - Send a single fenced Python block and nothing else that matters.
   - The block runs in the namespace. Names you bind persist into later
     turns, so build on what is there instead of rebuilding it. PROMPT is
     the one name to leave alone: rebind it and the data is gone for the
@@ -89,12 +89,12 @@ This is what to reach for whenever the answer depends on more text than you
 can read. Searching finds a word; a sub-agent can read a section and tell you
 what it says.
 
-  answer = await rlm(subprompt, instruction=None)
-      It gets its own namespace with your subprompt bound as its PROMPT, works
+  answer = await rlm(piece, instruction=None)
+      It gets its own namespace with your piece bound as its PROMPT, works
       the same way you do, and returns what it passes to FINAL. It cannot see
       your variables and you cannot see its steps.
 
-  answers = await gather_rlm([subprompt, ...], instruction=None)
+  answers = await gather_rlm([piece, ...], instruction=None)
       The same over a list, run at the same time, results in the order given.
 
 Say what you want in `instruction`. A sub-agent handed a slice and no question
@@ -208,10 +208,10 @@ Python standard library is, so parse with it: `csv` for CSV or TSV,
 
 
 _SCHEMA = """
-This run was given an output schema, printed at the top of the first output.
+This run was given an output schema, shown above the first output.
 Whatever you pass to FINAL is checked against it. A value that does not match
 is not accepted: you are shown what does not match, every name you bound is
-still there, and you call FINAL again with the value corrected. Pass plain
+still there, and you hand FINAL the corrected value. Pass plain
 JSON values — dicts, lists, strings, numbers, booleans, None. A set, a tuple
 or an object of your own class cannot be checked.
 """
@@ -224,7 +224,7 @@ searching that.
 """
 
 _CHILD_DICT = """
-A subprompt can be a string, a dict or a list. When a piece has structure,
+A piece can be a string, a dict or a list. When a piece has structure,
 hand it over as a dict of its data fields and keep what you want done in
 `instruction`: the sub-agent gets that dict as its PROMPT and does not have to
 parse it back out of text.
@@ -232,7 +232,7 @@ parse it back out of text.
 
 _CHILD_SCHEMA = """
 When you need a particular shape back, pass `schema` a JSON Schema dict. The
-sub-agent's FINAL is checked against it the way an answer to this run would
+what the sub-agent hands to FINAL is checked the same way an answer here would
 be, so what returns already has that shape and needs no parsing.
 """
 

@@ -70,7 +70,7 @@ class InProcessRuntime:
         # instead of raising, so code the model writes after FINAL runs the
         # same as it would in any other cell -- matching the other two
         # runtimes, rather than cutting the cell short.
-        self._outcome = {"has_final": False, "final": None}
+        self._outcome = {"final_given": False, "final": None}
         self.namespace: dict[str, Any] = {
             "__name__": "__rlm_cell__",
             "PROMPT": prompt,
@@ -101,7 +101,7 @@ class InProcessRuntime:
             self.namespace[f"_tool_{tool.name}"] = tool.value
 
     def _final(self, value=None):
-        self._outcome["has_final"] = True
+        self._outcome["final_given"] = True
         self._outcome["final"] = value
 
     def _drive(self, pending):
@@ -139,7 +139,7 @@ class InProcessRuntime:
 
     def execute(self, code: str) -> CellOutcome:
         buffer = io.StringIO()
-        self._outcome["has_final"] = False
+        self._outcome["final_given"] = False
         self._outcome["final"] = None
         error = None
         try:
@@ -155,7 +155,7 @@ class InProcessRuntime:
         return CellOutcome(
             stdout=buffer.getvalue(),
             final=self._outcome["final"],
-            has_final=self._outcome["has_final"],
+            final_given=self._outcome["final_given"],
             error=error,
         )
 

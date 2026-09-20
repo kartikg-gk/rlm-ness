@@ -37,7 +37,7 @@ class RuntimeGone(Exception):
 class CellOutcome:
     stdout: str = ""
     final: Any = None
-    has_final: bool = False
+    final_given: bool = False
     error: str | None = None
 
 
@@ -215,7 +215,7 @@ class ProtocolRuntime:
             raise
 
     def _reply(self, call_id, ok: bool, *, value=None, error=None) -> None:
-        message = {"op": "bridge_result", "ok": ok, "_id": call_id}
+        message = {"op": "bridge_reply", "ok": ok, "_id": call_id}
         if ok:
             message["value"] = value
         else:
@@ -237,7 +237,7 @@ class ProtocolRuntime:
                 return CellOutcome(
                     stdout=message.get("stdout", ""),
                     final=message.get("final"),
-                    has_final=bool(message.get("has_final")),
+                    final_given=bool(message.get("final_given")),
                     error=message.get("error"),
                 )
             if operation == "bridge":

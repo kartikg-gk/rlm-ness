@@ -36,8 +36,9 @@ SCHEMA_SHOWN = "FINAL must be given a value matching this JSON Schema:\n{schema}
 
 SCHEMA_REFUSED = (
     "FINAL was not accepted: the value does not match the output schema. "
-    "Nothing else was lost. Every name you bound is still here, so correct "
-    "the value and call FINAL again rather than redoing the work.\n\n"
+    "Nothing else was lost. Every name you bound is still here, so put the "
+    "value right and hand it to FINAL once more rather than redoing the "
+    "work.\n\n"
     "Schema:\n{schema}\n\nWhat does not match:\n{problems}"
 )
 
@@ -52,7 +53,7 @@ PYTHON_TAGS = {"", "python", "py", "python3"}
 
 NO_CODE = (
     "No fenced Python block was found in your reply. Nothing ran. "
-    "Reply with exactly one ```python block."
+    "Send a single ```python block."
 )
 
 TOO_DEEP = (
@@ -67,19 +68,19 @@ ASK_ONE = (
     "have not reduced. It begins: {preview}\n"
     "Sub-agents pay off on pieces you have already narrowed: slice, filter or "
     "summarise in your own namespace first, then hand over the smaller result.\n"
-    "Approve this call? Answer YES or NO on the first line, then one line of "
-    "reason."
+    "Should this call go ahead? Put ALLOW or STOP on its own first line, then "
+    "one line saying why."
 )
 
 ASK_BATCH = (
     "STOP. Confirm before these {count} sub-agent calls run.\n"
-    "Your own PROMPT is {parent:,} characters. {tripping} of the pieces are a "
+    "Your own PROMPT is {parent:,} characters. {oversized} of the pieces are a "
     "large, barely reduced share of it:\n{lines}\n"
     "Sub-agents pay off on pieces you have already narrowed: slice, filter or "
     "summarise in your own namespace first, then hand over the smaller "
     "results.\n"
-    "Approve the whole batch? Answer YES or NO on the first line, then one "
-    "line of reason."
+    "Should the whole batch go ahead? Put ALLOW or STOP on its own first "
+    "line, then one line saying why."
 )
 
 REFUSED_HANDOFF = (
@@ -100,14 +101,15 @@ UNSEEN = (
 
 
 def approves(text: str) -> bool:
-    """Whether a confirmation answered anything other than a flat no.
+    """Whether a confirmation said anything other than stop.
 
-    Open on anything unclear, on purpose: a guard that stops work whenever it
-    cannot parse an answer costs turns on every reply that begins "Nothing
-    wrong", "None of them" or "Note:". Only a first word of NO refuses.
+    Open on anything unclear, on purpose. A check that halts whenever it
+    cannot parse an answer spends a turn on every reply that opens with a
+    word it did not expect, and the cost of letting a doubtful handoff run is
+    one call. Only the word STOP holds it back.
     """
     first = re.search(r"[A-Za-z]+", text or "")
-    return (first.group(0).upper() if first else "") != "NO"
+    return (first.group(0).upper() if first else "") != "STOP"
 
 
 def answers_without_looking(code: str) -> bool:
@@ -263,7 +265,7 @@ def budget_banner(used: int, max_steps: int) -> str:
         return ""
     remaining = max_steps - used
     return (
-        f"[Steps remaining after this one: {remaining} / {max_steps}]\n"
+        f"[Turns left once this one ends: {remaining} of {max_steps}]\n"
         "[If you are not close, hand the remaining pieces to sub-agents rather "
         "than looking again yourself.]\n"
     )
@@ -416,7 +418,7 @@ def solve(
             )
         return {name: tools[name] for name in granted}
 
-    def _handed(subprompt):
+    def _handed(piece):
         """What a sub-agent is given as its PROMPT.
 
         Text stays text. A dict or a list is passed as itself, so a piece with
@@ -425,13 +427,13 @@ def solve(
         an object is not a piece of the data, and turning it into text would
         hide the mistake that sent it.
         """
-        if isinstance(subprompt, str):
-            return subprompt
-        if isinstance(subprompt, (dict, list)):
-            return subprompt if config.enable_structured_output else json.dumps(subprompt, default=str)
+        if isinstance(piece, str):
+            return piece
+        if isinstance(piece, (dict, list)):
+            return piece if config.enable_structured_output else json.dumps(piece, default=str)
         raise TypeError(
             f"a sub-agent is given a string, a dict or a list, not a "
-            f"{type(subprompt).__name__}"
+            f"{type(piece).__name__}"
         )
 
     def _size(value) -> int:
@@ -440,11 +442,11 @@ def solve(
     def _too_big(pieces) -> list:
         """Which pieces are a large, barely reduced share of this agent's own PROMPT."""
         parent = _size(prompt)
-        if parent < config.compression_min_chars:
+        if parent < config.handoff_min_chars:
             return []
         return [
             piece for piece in pieces
-            if _size(piece) >= config.compression_ratio * parent
+            if _size(piece) >= config.handoff_share * parent
         ]
 
     def _confirm(question: str) -> tuple[bool, str]:
@@ -464,11 +466,11 @@ def solve(
         a dozen pieces would otherwise cost a dozen extra calls to say the same
         thing about the same slice.
         """
-        if not config.enable_compression_guard:
+        if not config.enable_handoff_guard:
             return
         pieces = list(pieces)
-        tripping = _too_big(pieces)
-        if not tripping:
+        oversized = _too_big(pieces)
+        if not oversized:
             return
         parent = _size(prompt)
         if len(pieces) == 1:
@@ -485,15 +487,15 @@ def solve(
                 for n, piece in enumerate(pieces)
             )
             question = ASK_BATCH.format(
-                count=len(pieces), parent=parent, tripping=len(tripping), lines=lines,
+                count=len(pieces), parent=parent, oversized=len(oversized), lines=lines,
             )
         allowed, reason = _confirm(question)
         if not allowed:
             raise RuntimeError(REFUSED_HANDOFF.format(reason=reason))
 
-    def _child(subprompt, instruction=None, token=None, granted=None, schema=None):
+    def _child(piece, instruction=None, token=None, granted=None, schema=None):
         return solve(
-            _handed(subprompt),
+            _handed(piece),
             backend,
             instruction=instruction,
             config=config,
@@ -507,11 +509,11 @@ def solve(
             output_schema=schema,
         ).output
 
-    def _rlm(subprompt, instruction=None, tools=None, schema=None):
+    def _rlm(piece, instruction=None, tools=None, schema=None):
         if not can_recurse:
             raise RuntimeError(TOO_DEEP)
-        _permitted([subprompt])
-        return _child(subprompt, instruction, cancel, tools, schema)
+        _permitted([piece])
+        return _child(piece, instruction, cancel, tools, schema)
 
     def _spread(work, items):
         """Run `work` over `items` concurrently, abandoning the rest on the
@@ -557,13 +559,13 @@ def solve(
         finally:
             pool.shutdown(wait=False)
 
-    def _gather_rlm(subprompts, instruction=None, tools=None, schema=None):
+    def _gather_rlm(pieces, instruction=None, tools=None, schema=None):
         if not can_recurse:
             raise RuntimeError(TOO_DEEP)
-        subprompts = list(subprompts)
-        _permitted(subprompts)
+        pieces = list(pieces)
+        _permitted(pieces)
         return _spread(
-            lambda item, token: _child(item, instruction, token, tools, schema), subprompts
+            lambda item, token: _child(item, instruction, token, tools, schema), pieces
         )
 
     def _gather_llm(texts):
@@ -798,7 +800,7 @@ def solve(
             # is set aside, and the model is shown the output it wrote that
             # answer without seeing.
             held = (
-                cell.has_final
+                cell.final_given
                 and config.enable_blind_final_guard
                 and writes_answer_blind(code)
             )
@@ -806,10 +808,10 @@ def solve(
             # keeps the block's work, like a held answer, and says what to fix.
             refused = (
                 shape.problems(cell.final)
-                if shape is not None and cell.has_final and not held
+                if shape is not None and cell.final_given and not held
                 else []
             )
-            if cell.has_final and not held and not refused:
+            if cell.final_given and not held and not refused:
                 emit(
                     trace, "output_received",
                     run_id=run_id, step=step, output=output, error=False,

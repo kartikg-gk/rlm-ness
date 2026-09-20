@@ -162,9 +162,9 @@ print(answer.output, answer.usage.cost)
 | `inherit_tools` | `false` | sub-agents get their parent's tools without being given them |
 | `enable_delegation` | `true` | let agents start sub-agents |
 | `enable_structured_output` | `true` | keep dicts and lists as they are; check `output_schema` |
-| `enable_compression_guard` | `true` | ask an agent to confirm before it hands a sub-agent most of its own input |
-| `compression_min_chars` | `5000` | inputs smaller than this are never questioned |
-| `compression_ratio` | `0.6` | share of the parent's input that counts as barely reduced |
+| `enable_handoff_guard` | `true` | ask an agent to confirm before it hands a sub-agent most of its own input |
+| `handoff_min_chars` | `5000` | inputs smaller than this are never questioned |
+| `handoff_share` | `0.6` | share of the parent's input that counts as barely reduced |
 | `enable_step_banner` | `true` | tell an agent how many turns it has left |
 | `enable_batching_guard` | `true` | require sub-agents to be started in batches through `gather_rlm` |
 | `enable_blind_final_guard` | `false` | hold back an answer written before the data was read |
