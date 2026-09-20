@@ -14,7 +14,7 @@ sub-agent returns lands back in the REPL as a plain value.
 ```bash
 pip install rlm-ness
 rlmness --setup
-export OPENROUTER_API_KEY=sk-or-...
+export OPENROUTER_API_KEY=sk-or-...        # or ANTHROPIC_API_KEY, DEEPSEEK_API_KEY
 ```
 
 `rlmness --setup` installs the sandbox the model's code runs in (needs
@@ -26,10 +26,15 @@ isolated runtime.
 
 ```bash
 rlmness "How many r's are in strawberry?"
+rlmness --input-file server.log "Which errors repeat most, and when?"
 cat server.log | rlmness --instruction "Which errors repeat most, and when?"
 rlmness --model deepseek/deepseek-v4-flash "..."
-rlmness --provider deepseek "..."            # uses DEEPSEEK_API_KEY
+rlmness --provider anthropic "..."           # or deepseek; each reads its own key
 ```
+
+`--input-file` takes the data and the question stays separate. A `.json`,
+`.jsonl` or `.yaml` file arrives as the data it describes; anything else
+arrives as text for the model to slice.
 
 Run `rlmness` with no question to open the live screen and ask from there.
 
@@ -128,7 +133,7 @@ print(answer.output, answer.usage.cost)
 | `primary_agent` | — | model for the root agent (required) |
 | `sub_agent` | same as `primary_agent` | model for the agents it starts |
 | `runtime` | `wasm` | `wasm`, `subprocess` or `in-process` |
-| `provider` | `openrouter` | `openrouter` or `deepseek` |
+| `provider` | `openrouter` | `openrouter`, `anthropic` or `deepseek` |
 | `max_cost` | `1.0` | dollar limit for a whole run |
 | `max_seconds` | `1800` | time limit for a whole run |
 | `max_steps` | `20` | turns per agent |
@@ -157,6 +162,9 @@ print(answer.output, answer.usage.cost)
 | `inherit_tools` | `false` | sub-agents get their parent's tools without being given them |
 | `enable_delegation` | `true` | let agents start sub-agents |
 | `enable_structured_output` | `true` | keep dicts and lists as they are; check `output_schema` |
+| `enable_compression_guard` | `true` | ask an agent to confirm before it hands a sub-agent most of its own input |
+| `compression_min_chars` | `5000` | inputs smaller than this are never questioned |
+| `compression_ratio` | `0.6` | share of the parent's input that counts as barely reduced |
 | `enable_step_banner` | `true` | tell an agent how many turns it has left |
 | `enable_batching_guard` | `true` | require sub-agents to be started in batches through `gather_rlm` |
 | `enable_blind_final_guard` | `false` | hold back an answer written before the data was read |

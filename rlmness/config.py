@@ -121,6 +121,16 @@ class Config:
     # and stops the rest when one piece fails; a hand-built gather does
     # neither. Enforced only where the runtime owns its interpreter.
     enable_batching_guard: bool = True
+    # Ask an agent to confirm before it hands a sub-agent a large, barely
+    # reduced share of its own PROMPT. Delegation pays off on pieces already
+    # narrowed; passing the whole thing down buys nothing and is billed twice.
+    enable_compression_guard: bool = True
+    # Below this, an agent's PROMPT is small enough that handing it over whole
+    # costs little, and a question about it would cost more than it saves.
+    compression_min_chars: int = 5000
+    # The share of the parent's own PROMPT that counts as barely reduced.
+    compression_ratio: float = 0.6
+
     # Check FINAL against an output schema when the caller gives one, for the
     # run and for any sub-agent asked for a shape. Off ignores every schema.
     enable_structured_output: bool = True
@@ -214,5 +224,14 @@ def load_config(
         ),
         enable_structured_output=bool(
             raw.get("enable_structured_output", defaults.enable_structured_output)
+        ),
+        enable_compression_guard=bool(
+            raw.get("enable_compression_guard", defaults.enable_compression_guard)
+        ),
+        compression_min_chars=int(
+            raw.get("compression_min_chars", defaults.compression_min_chars)
+        ),
+        compression_ratio=float(
+            raw.get("compression_ratio", defaults.compression_ratio)
         ),
     )

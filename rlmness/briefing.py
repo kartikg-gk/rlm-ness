@@ -180,6 +180,8 @@ it is the shorter path. You do not have to exhaust searching first.
 
 Give the pieces out in one gather call rather than one at a time.
 
+Hand out what you have already narrowed. A piece that is most of what you were given yourself has not been reduced by passing it on: the child reads what you did not, and the same text is paid for twice. Slice, filter or summarise first, then delegate the result.
+
 If a step leaves you no better off than the one before it, that is the moment
 to hand the piece out, not to look at it again yourself.\
 """
