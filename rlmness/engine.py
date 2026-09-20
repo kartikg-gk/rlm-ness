@@ -60,6 +60,35 @@ TOO_DEEP = (
     "Solve this task yourself, slicing PROMPT in the namespace."
 )
 
+ASK_ONE = (
+    "STOP. Confirm before this sub-agent call runs.\n"
+    "Your own PROMPT is {parent:,} characters. The one you are handing over is "
+    "{child:,} — {share}% of it, so the child is being asked to read what you "
+    "have not reduced. It begins: {preview}\n"
+    "Sub-agents pay off on pieces you have already narrowed: slice, filter or "
+    "summarise in your own namespace first, then hand over the smaller result.\n"
+    "Approve this call? Answer YES or NO on the first line, then one line of "
+    "reason."
+)
+
+ASK_BATCH = (
+    "STOP. Confirm before these {count} sub-agent calls run.\n"
+    "Your own PROMPT is {parent:,} characters. {tripping} of the pieces are a "
+    "large, barely reduced share of it:\n{lines}\n"
+    "Sub-agents pay off on pieces you have already narrowed: slice, filter or "
+    "summarise in your own namespace first, then hand over the smaller "
+    "results.\n"
+    "Approve the whole batch? Answer YES or NO on the first line, then one "
+    "line of reason."
+)
+
+REFUSED_HANDOFF = (
+    "The sub-agent call was not made. You were asked to confirm it and "
+    "answered: {reason}\n"
+    "Nothing was lost — every name you bound is still here. Reduce what you "
+    "were about to hand over, then call again."
+)
+
 UNSEEN = (
     "Nothing ran. That block answers without reading PROMPT, and you have only "
     "been shown its first and last {preview} characters — the answer would be "
@@ -68,6 +97,17 @@ UNSEEN = (
     "depend on what is in it, print your reasoning this turn and call FINAL on "
     "the next one."
 )
+
+
+def approves(text: str) -> bool:
+    """Whether a confirmation answered anything other than a flat no.
+
+    Open on anything unclear, on purpose: a guard that stops work whenever it
+    cannot parse an answer costs turns on every reply that begins "Nothing
+    wrong", "None of them" or "Note:". Only a first word of NO refuses.
+    """
+    first = re.search(r"[A-Za-z]+", text or "")
+    return (first.group(0).upper() if first else "") != "NO"
 
 
 def answers_without_looking(code: str) -> bool:
@@ -394,6 +434,63 @@ def solve(
             f"{type(subprompt).__name__}"
         )
 
+    def _size(value) -> int:
+        return len(value if isinstance(value, str) else json.dumps(value, default=str))
+
+    def _too_big(pieces) -> list:
+        """Which pieces are a large, barely reduced share of this agent's own PROMPT."""
+        parent = _size(prompt)
+        if parent < config.compression_min_chars:
+            return []
+        return [
+            piece for piece in pieces
+            if _size(piece) >= config.compression_ratio * parent
+        ]
+
+    def _confirm(question: str) -> tuple[bool, str]:
+        """Put a handoff to this agent's own model, and charge it like any call."""
+        allowance.reserve()
+        asked = messages + [{"role": "user", "content": question}]
+        text, usage, _ = _reply(backend, asked, model)
+        allowance.settle(usage)
+        nonlocal total
+        total = _add(total, usage)
+        return approves(text), (text.strip() or "(no reason given)")
+
+    def _permitted(pieces) -> None:
+        """Ask before handing over what the parent has not reduced.
+
+        A whole batch is one question rather than one per child: a fan-out over
+        a dozen pieces would otherwise cost a dozen extra calls to say the same
+        thing about the same slice.
+        """
+        if not config.enable_compression_guard:
+            return
+        pieces = list(pieces)
+        tripping = _too_big(pieces)
+        if not tripping:
+            return
+        parent = _size(prompt)
+        if len(pieces) == 1:
+            shown = str(pieces[0])[:140]
+            question = ASK_ONE.format(
+                parent=parent, child=_size(pieces[0]),
+                share=round(_size(pieces[0]) / max(1, parent) * 100), preview=shown,
+            )
+        else:
+            lines = "\n".join(
+                f"  [{n + 1}] {_size(piece):,} characters "
+                f"({round(_size(piece) / max(1, parent) * 100)}% of yours): "
+                f"{str(piece)[:140]}"
+                for n, piece in enumerate(pieces)
+            )
+            question = ASK_BATCH.format(
+                count=len(pieces), parent=parent, tripping=len(tripping), lines=lines,
+            )
+        allowed, reason = _confirm(question)
+        if not allowed:
+            raise RuntimeError(REFUSED_HANDOFF.format(reason=reason))
+
     def _child(subprompt, instruction=None, token=None, granted=None, schema=None):
         return solve(
             _handed(subprompt),
@@ -413,6 +510,7 @@ def solve(
     def _rlm(subprompt, instruction=None, tools=None, schema=None):
         if not can_recurse:
             raise RuntimeError(TOO_DEEP)
+        _permitted([subprompt])
         return _child(subprompt, instruction, cancel, tools, schema)
 
     def _spread(work, items):
@@ -462,6 +560,8 @@ def solve(
     def _gather_rlm(subprompts, instruction=None, tools=None, schema=None):
         if not can_recurse:
             raise RuntimeError(TOO_DEEP)
+        subprompts = list(subprompts)
+        _permitted(subprompts)
         return _spread(
             lambda item, token: _child(item, instruction, token, tools, schema), subprompts
         )
