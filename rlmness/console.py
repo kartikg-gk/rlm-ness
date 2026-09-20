@@ -10,6 +10,7 @@ import sys
 from .providers import PROVIDERS, MissingApiKey, make_client
 from .config import load_config
 from .engine import RUNTIMES, Answer, solve
+from .inputs import UnreadableInput, load_input
 from .journal import Journal
 from .session import Session
 
@@ -23,6 +24,14 @@ def _parse(argv):
     )
     parser.add_argument("--model")
     parser.add_argument("--instruction")
+    parser.add_argument(
+        "--input-file",
+        help=(
+            "read the prompt from a file; .json, .jsonl and .yaml arrive as the "
+            "data they describe, anything else as text. A question given as well "
+            "is taken as the instruction"
+        ),
+    )
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--max-depth", type=int)
     parser.add_argument("--config")
@@ -101,8 +110,22 @@ def main(argv=None, *, backend=None) -> int:
     # No query and a terminal to draw on: open the dashboard and let the
     # question be typed there. Piped input still means "read it and answer",
     # so `cat file | rlmness` keeps working headless.
-    interactive = args.query is None and sys.stdin.isatty()
-    query = args.query if args.query is not None else ("" if interactive else sys.stdin.read())
+    interactive = args.query is None and not args.input_file and sys.stdin.isatty()
+    if args.query is not None or args.input_file:
+        query = args.query or ""
+    else:
+        query = "" if interactive else sys.stdin.read()
+    instruction = args.instruction
+    if args.input_file:
+        # The file is the data; a question asked beside it is what to do with
+        # it, which is the instruction rather than more of the data.
+        try:
+            query = load_input(args.input_file)
+        except UnreadableInput as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        if instruction is None and args.query:
+            instruction = args.query
     wants_dashboard = args.dashboard or interactive
 
     try:
@@ -195,7 +218,7 @@ def main(argv=None, *, backend=None) -> int:
             return solve(
                 text,
                 backend,
-                instruction=args.instruction,
+                instruction=instruction,
                 config=chosen,
                 trace=sink,
                 session=book,
