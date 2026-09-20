@@ -90,87 +90,50 @@ rlmness-timeline traces/run_x.jsonl         # which agent ran when
 Each run saves a trace under `traces/` in the current folder and prints its
 path at the end.
 
-## Use it from Python
-
-```python
-from rlmness import Config, make_client, solve
-
-def lookup_owner(service: str) -> str:
-    """Team that owns a service."""
-    return {"billing": "payments", "auth": "identity"}.get(service, "unknown")
-
-answer = solve(
-    open("server.log").read(),
-    make_client("openrouter"),
-    config=Config(primary_agent="z-ai/glm-5", sub_agent="minimax/minimax-m2.5"),
-    instruction="Which service failed most, and who owns it?",
-    tools={"lookup_owner": lookup_owner, "region": "eu-west-1"},
-    output_schema={"type": "object", "required": ["service", "owner"]},
-)
-print(answer.output, answer.usage.cost)
-```
-
-- **`tools`** — functions become callable in the REPL; other values (strings,
-  dicts, tables) become plain variables the model can read.
-- **`output_schema`** — the answer must match this JSON Schema. A mismatch goes
-  back to the model to fix, without losing its work.
-- **`prompt`** can be a dict or list as well as text.
-- **`Config(runtime="subprocess")`** picks the runtime; `load_config()` reads
-  the same config file the command uses.
-
 ## Configuration
 
-`rlmness` reads the first config it finds:
+`rlmness --setup` writes `~/.rlmness/rlmness.yaml`, with every setting in it
+and a comment on what each one does. Change it there, or keep a
+`rlmness.yaml` beside your work for one project.
+
+Which file is used, first one found:
 
 1. the file given with `--config`
 2. `rlmness.yaml` in the current folder
 3. `~/.rlmness/rlmness.yaml` (move it with `RLMNESS_HOME`)
 
-`--model`, `--runtime` and `--provider` override the file for one run.
+`--model`, `--runtime` and `--provider` override the file for a single run.
+
+The settings worth knowing about:
 
 | Setting | Default | |
 |---|---|---|
 | `primary_agent` | — | model for the root agent (required) |
 | `sub_agent` | same as `primary_agent` | model for the agents it starts |
-| `runtime` | `wasm` | `wasm`, `subprocess` or `in-process` |
 | `provider` | `openrouter` | `openrouter`, `anthropic` or `deepseek` |
+| `runtime` | `wasm` | where the model's code runs |
 | `max_cost` | `1.0` | dollar limit for a whole run |
 | `max_seconds` | `1800` | time limit for a whole run |
-| `max_steps` | `20` | turns per agent |
+| `max_steps` | `20` | turns each agent gets |
 | `max_depth` | `3` | how deeply sub-agents can nest |
-| `max_concurrent` | `16` | sub-agents running at once in one batch |
-| `max_tokens` | unset | cap on one reply; set it if your key has little credit |
 
-<details>
-<summary>All settings</summary>
+## Use it from Python
 
-| Setting | Default | |
-|---|---|---|
-| `max_calls` | `2000` | model calls in a whole run |
-| `max_completion_tokens` | `500000` | output tokens in a whole run |
-| `max_prompt_tokens` | `200000` | input plus output of a single call |
-| `max_live` | `32` | agents alive at once across the whole run |
-| `timeout` | `120` | seconds one code cell may run |
-| `truncate_len` | `10000` | characters of a cell's output the model sees |
-| `api_timeout` | `60` | seconds to wait on each read from the provider |
-| `api_deadline` | `600` | seconds for a whole reply |
-| `api_max_retries` | `3` | retries on a failed call |
-| `api_backoff` | `0.5` | seconds before the first retry, doubling after |
-| `api_retry_after_max` | `60` | longest wait the provider may ask for between retries |
-| `temperature` | `0.1` | sampling temperature |
-| `reasoning_effort` | `low` | reasoning level, where the model supports it |
-| `inherit_tools` | `false` | sub-agents get their parent's tools without being given them |
-| `enable_delegation` | `true` | let agents start sub-agents |
-| `enable_structured_output` | `true` | keep dicts and lists as they are; check `output_schema` |
-| `enable_handoff_guard` | `true` | ask an agent to confirm before it hands a sub-agent most of its own input |
-| `handoff_min_chars` | `5000` | inputs smaller than this are never questioned |
-| `handoff_share` | `0.6` | share of the parent's input that counts as barely reduced |
-| `enable_step_banner` | `true` | tell an agent how many turns it has left |
-| `enable_batching_guard` | `true` | require sub-agents to be started in batches through `gather_rlm` |
-| `enable_blind_final_guard` | `false` | hold back an answer written before the data was read |
-| `enable_first_look_guard` | `false` | refuse a first-turn answer that never looked at the input |
+```python
+from rlmness import Config, make_client, solve
 
-</details>
+answer = solve(
+    open("server.log").read(),
+    make_client("openrouter"),
+    config=Config(primary_agent="z-ai/glm-5", sub_agent="minimax/minimax-m2.5"),
+    instruction="Which service failed most, and when?",
+)
+print(answer.output, answer.usage.cost)
+```
+
+`solve()` also takes `tools=` (your functions, callable in the REPL, and any
+other value as a plain variable) and `output_schema=` (a JSON Schema the
+answer must match). `load_config()` reads the same file the command does.
 
 ## License
 
