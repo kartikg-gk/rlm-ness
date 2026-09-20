@@ -1,5 +1,6 @@
 from .providers import (
     ModelClient,
+    AnthropicClient,
     ChatClient,
     DeepSeekClient,
     OpenRouterClient,
@@ -18,6 +19,7 @@ __all__ = [
     "Allowance",
     "AllowanceSpent",
     "CellOutcome",
+    "AnthropicClient",
     "ChatClient",
     "Config",
     "DeepSeekClient",
