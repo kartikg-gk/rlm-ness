@@ -1,0 +1,10 @@
+prune tests
+prune evals
+prune examples
+prune docs
+prune node_modules
+prune traces
+exclude package.json
+exclude package-lock.json
+exclude rlmness.yaml
+exclude *.jsonl
