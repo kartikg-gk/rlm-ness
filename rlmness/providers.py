@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -113,6 +114,31 @@ def _cost(usage: dict) -> float | None:
     if upstream is not None and upstream > 0:
         return upstream
     return top
+
+
+#: Marks a call the model made in its own tool-call format rather than in code.
+NATIVE_CALL = "[tool call, not run]"
+
+
+def native_call(name: str, arguments) -> str:
+    """A tool call the model emitted, written out where the reply text goes.
+
+    Some models answer with their own tool-call format even when no tools are
+    offered, and the provider moves that call out of the reply into a field of
+    its own. Reading only the reply then sees nothing at all, and the model is
+    told it sent nothing — when it had in fact tried to act. Kept as text, the
+    call stays in its transcript, and the loop can say what went wrong.
+    """
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments) if arguments else {}
+        except json.JSONDecodeError:
+            return f"\n\n{NATIVE_CALL} {name}({arguments[:300]})"
+    if isinstance(arguments, dict):
+        shown = ", ".join(f"{key}={value!r}"[:200] for key, value in arguments.items())
+    else:
+        shown = repr(arguments)[:300]
+    return f"\n\n{NATIVE_CALL} {name}({shown})"
 
 
 def _reasoning_text(message: dict) -> str | None:
@@ -330,7 +356,13 @@ class ChatClient:
             ),
         )
         message = payload["choices"][0]["message"]
-        text = message.get("content") or ""
+        text = (message.get("content") or "") + "".join(
+            native_call(
+                (call.get("function") or {}).get("name", "?"),
+                (call.get("function") or {}).get("arguments", ""),
+            )
+            for call in message.get("tool_calls") or []
+        )
         # Returned as a third item rather than folded into the text: it is not
         # part of the reply the loop acts on, and a sink that keeps records
         # wants it separable from the code the model actually wrote. Callers
@@ -386,6 +418,9 @@ class AnthropicClient(ChatClient):
         blocks = payload.get("content") or []
         text = "\n".join(
             b.get("text", "") for b in blocks if b.get("type") == "text"
+        ) + "".join(
+            native_call(b.get("name", "?"), b.get("input", {}))
+            for b in blocks if b.get("type") == "tool_use"
         )
         thinking = "\n".join(
             b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
