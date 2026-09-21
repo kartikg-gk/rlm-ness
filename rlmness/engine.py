@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
-from .providers import ModelClient, Spend, combine
+from .providers import NATIVE_CALL, ModelClient, Spend, combine
 from .limits import Allowance, Abandoned
 from .config import Config, load_config
 from .briefing import (
@@ -48,12 +48,28 @@ RUNTIMES = {
     "in-process": InProcessRuntime,
 }
 
-_FENCE = re.compile(r"```([A-Za-z0-9_.+-]*)[ \t]*\r?\n(.*?)```", re.S)
+# The newline after the language tag is optional: models sometimes start the
+# code on the fence's own line, as in ```python# first comment.
+_FENCE = re.compile(r"```([A-Za-z0-9_.+-]*)[ \t]*(?:\r?\n)?(.*?)```", re.S)
+
+# A call in a model's own markup, left as text by a provider that did not
+# parse it. When it names code, the code inside is what the model meant to run.
+_INVOKE = re.compile(r'<invoke name="([^"]+)">(.*?)</invoke>', re.S)
+_PARAMETER = re.compile(r'<parameter name="([^"]+)">(.*?)</parameter>', re.S)
+CODE_CALLS = {"code", "python", "run", "execute", "exec", "run_code", "execute_code"}
 PYTHON_TAGS = {"", "python", "py", "python3"}
 
 NO_CODE = (
     "No fenced Python block was found in your reply. Nothing ran. "
     "Send a single ```python block."
+)
+
+NO_TOOLS = (
+    "That was a tool call, and nothing here runs tool calls, so nothing ran. "
+    "rlm, gather_rlm and FINAL are Python functions: write the call inside a "
+    "```python block, with await. Pass data by name, such as PROMPT['memo'] or "
+    "a variable you bound, rather than pasting text you were shown — what is "
+    "printed is cut short, so a pasted copy is not the whole of it."
 )
 
 TOO_DEEP = (
@@ -197,6 +213,28 @@ class Answer:
     usage: Spend
 
 
+def _marked_up_code(text: str) -> list[str]:
+    """Code inside a call written in a model's own markup, when nothing is fenced.
+
+    Only calls that name code are read, and only their code: a call whose
+    parameters are prose would run as a SyntaxError and teach nothing.
+    """
+    found = []
+    for name, body in _INVOKE.findall(text):
+        if name.strip().lower() not in CODE_CALLS:
+            continue
+        parameters = dict(_PARAMETER.findall(body))
+        code = next(
+            (parameters[key] for key in ("code", "source", "python") if key in parameters),
+            None,
+        )
+        if code is None and not parameters:
+            code = body
+        if code and code.strip():
+            found.append(code.strip("\n") + "\n")
+    return found
+
+
 def runnable_code(text: str) -> str | None:
     """Everything the reply meant to run, as one cell.
 
@@ -215,7 +253,7 @@ def runnable_code(text: str) -> str | None:
         body
         for tag, body in _FENCE.findall(text or "")
         if tag.lower() in PYTHON_TAGS
-    ]
+    ] or _marked_up_code(text or "")
     # A model that shows the same block twice — restating it after a sentence
     # of explanation, or fencing one plan in two pieces — meant it to run
     # once. Joining both copies runs every statement twice, which redefines
@@ -769,17 +807,21 @@ def solve(
 
             code = runnable_code(text)
             if code is None:
+                # A model that reached for its own tool-call format was trying
+                # to act, and is told how to say the same thing here. Told only
+                # that it sent no code, it repeats the call.
+                notice = NO_TOOLS if NATIVE_CALL in text else NO_CODE
                 emit(trace, "code_generated", run_id=run_id, step=step, code=None)
                 emit(
                     trace, "output_received",
-                    run_id=run_id, step=step, output=NO_CODE, error=True,
+                    run_id=run_id, step=step, output=notice, error=True,
                 )
-                _log(trace, depth, run_id, parent_run_id, step, None, NO_CODE, True, usage, timestamps, reasoning)
+                _log(trace, depth, run_id, parent_run_id, step, None, notice, True, usage, timestamps, reasoning)
                 emit(
                     trace, "step_completed",
                     run_id=run_id, step=step, usage=usage, error=True, ended=_now(),
                 )
-                messages.append({"role": "user", "content": banner + NO_CODE})
+                messages.append({"role": "user", "content": banner + notice})
                 continue
 
             emit(trace, "code_generated", run_id=run_id, step=step, code=code)
