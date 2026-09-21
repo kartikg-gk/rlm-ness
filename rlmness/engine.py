@@ -455,9 +455,19 @@ def solve(
         asked = messages + [{"role": "user", "content": question}]
         text, usage, _ = _reply(backend, asked, model)
         allowance.settle(usage)
-        nonlocal total
-        total = _add(total, usage)
+        _count(usage)
         return approves(text), (text.strip() or "(no reason given)")
+
+    def _count(usage) -> None:
+        """Add spending to this agent's total, from whichever thread it happened on.
+
+        A fan-out's children finish on threads of their own, and so does a
+        handoff check, so the total is guarded rather than read and rewritten
+        by several at once.
+        """
+        nonlocal total
+        with counting:
+            total = _add(total, usage)
 
     def _permitted(pieces) -> None:
         """Ask before handing over what the parent has not reduced.
@@ -494,7 +504,10 @@ def solve(
             raise RuntimeError(REFUSED_HANDOFF.format(reason=reason))
 
     def _child(piece, instruction=None, token=None, granted=None, schema=None):
-        return solve(
+        # What a sub-agent spent is part of what this agent spent. Returning
+        # only its answer left the reported cost at the root's own calls, so a
+        # run that fanned out showed a fraction of its bill.
+        answer = solve(
             _handed(piece),
             backend,
             instruction=instruction,
@@ -507,7 +520,9 @@ def solve(
             tools=_for_child(granted),
             parent_run_id=run_id,
             output_schema=schema,
-        ).output
+        )
+        _count(answer.usage)
+        return answer.output
 
     def _rlm(piece, instruction=None, tools=None, schema=None):
         if not can_recurse:
@@ -594,6 +609,7 @@ def solve(
         },
     ]
     total = Spend()
+    counting = threading.Lock()
     text_prompt = str(prompt)
     emit(
         trace,
@@ -742,7 +758,7 @@ def solve(
             text, usage, reasoning = _reply(backend, messages, model)
             llm_call_end = _now()
             allowance.settle(usage)
-            total = _add(total, usage)
+            _count(usage)
             messages.append({"role": "assistant", "content": text})
 
             banner = (
