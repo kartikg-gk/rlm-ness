@@ -85,7 +85,8 @@ ASK_ONE = (
     "Sub-agents pay off on pieces you have already narrowed: slice, filter or "
     "summarise in your own namespace first, then hand over the smaller result.\n"
     "Should this call go ahead? Put ALLOW or STOP on its own first line, then "
-    "one line saying why."
+    "one line saying why. This answer does not run: write no code here, only "
+    "the verdict."
 )
 
 ASK_BATCH = (
@@ -96,7 +97,8 @@ ASK_BATCH = (
     "summarise in your own namespace first, then hand over the smaller "
     "results.\n"
     "Should the whole batch go ahead? Put ALLOW or STOP on its own first "
-    "line, then one line saying why."
+    "line, then one line saying why. This answer does not run: write no code "
+    "here, only the verdict."
 )
 
 REFUSED_HANDOFF = (
@@ -114,6 +116,21 @@ UNSEEN = (
     "depend on what is in it, print your reasoning this turn and call FINAL on "
     "the next one."
 )
+
+
+def _gist(text: str, limit: int = 300) -> str:
+    """The verdict and its reason, without whatever the model wrote after them.
+
+    The answer is quoted back into the refusal the agent reads, and a model
+    asked a question at the end of its own conversation often keeps going:
+    code, or a copy of what it was reading. Quoted whole, that buried the
+    refusal under a page of the agent's own data and the agent drew the wrong
+    conclusion from it.
+    """
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    kept = " ".join(line for line in lines[:2] if not line.startswith("```"))
+    kept = kept or "(no reason given)"
+    return kept if len(kept) <= limit else kept[:limit].rstrip() + "…"
 
 
 def approves(text: str) -> bool:
@@ -494,7 +511,7 @@ def solve(
         text, usage, _ = _reply(backend, asked, model)
         allowance.settle(usage)
         _count(usage)
-        return approves(text), (text.strip() or "(no reason given)")
+        return approves(text), _gist(text)
 
     def _count(usage) -> None:
         """Add spending to this agent's total, from whichever thread it happened on.
