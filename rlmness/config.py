@@ -108,11 +108,12 @@ class Config:
     # likely, and a refusal costs a turn whenever it is wrong.
     enable_first_look_guard: bool = False
     # Set aside a FINAL of fixed text written in the same block that reads
-    # PROMPT: it was decided before that block's output existed. Off by
-    # default, so a FINAL is accepted in any block, as the loop has always
-    # done. Every recorded case of it firing was an answer that was wrong,
-    # recalled, or about to be; turn it on to trade one step for that.
-    enable_blind_final_guard: bool = False
+    # PROMPT: it was decided before that block's output existed. Every
+    # recorded case of it firing was an answer that was wrong, recalled, or
+    # about to be, and an output schema makes it worse, since a made-up value
+    # of the right shape passes. Costs one step when the literal happened to
+    # be right.
+    enable_blind_final_guard: bool = True
     # A child starts with nothing its parent did not hand it. Turning this on
     # makes a child receive its parent's tools when the call does not say.
     inherit_tools: bool = False

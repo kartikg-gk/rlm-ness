@@ -30,7 +30,7 @@ reasoning_effort: low
 enable_delegation: true
 enable_step_banner: true
 enable_first_look_guard: false
-enable_blind_final_guard: false
+enable_blind_final_guard: true
 enable_batching_guard: true
 enable_structured_output: true
 enable_handoff_guard: true
