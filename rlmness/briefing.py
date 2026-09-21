@@ -37,6 +37,9 @@ and read the output.
 
 Each turn:
   - Send a single fenced Python block and nothing else that matters.
+    There is no function-calling interface: a call written in any form
+    other than Python does not run, and every helper here is a Python
+    function you call inside the block.
   - The block runs in the namespace. Names you bind persist into later
     turns, so build on what is there instead of rebuilding it. PROMPT is
     the one name to leave alone: rebind it and the data is gone for the
@@ -409,5 +412,16 @@ def opening_message(code: str, output: str, instruction: str | None = None,
         f"Outputs are truncated to their last {truncate_len} characters.\n\n"
         f"code:\n```python\n{code}```\n\n"
         f"Output:\n{output}\n\n"
-        f"Task: {task}"
+        f"Task: {task}\n\n"
+        # Said last, where the next reply begins. Without it a model that
+        # knows a tool-call format answers the task in that format, or in
+        # prose about what it will do, and nothing runs.
+        f"{REPLY_FORM}"
     )
+
+
+REPLY_FORM = (
+    "Reply with one ```python block; it runs as it stands. Prose and "
+    "function-call syntax do not run: FINAL and every helper you have are "
+    "Python functions you call inside the block."
+)
