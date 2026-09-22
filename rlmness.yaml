@@ -33,6 +33,7 @@ enable_first_look_guard: false
 enable_blind_final_guard: true
 enable_batching_guard: true
 enable_structured_output: true
+enable_resample: true
 enable_handoff_guard: true
 handoff_min_chars: 5000
 handoff_share: 0.6
