@@ -811,9 +811,19 @@ def solve(
             llm_call_start = _now()
             emit(trace, "step_started", run_id=run_id, step=step, started=llm_call_start)
             text, usage, reasoning = _reply(backend, messages, model)
-            llm_call_end = _now()
             allowance.settle(usage)
             _count(usage)
+            if config.enable_resample and runnable_code(text) is None:
+                # Nothing to run is most often the serving host's doing, not
+                # the model's: one dropped a call it could not parse, another
+                # cut the reply off. The same request routed again usually
+                # comes back as code, and asking silently keeps a failed reply
+                # and the notice about it out of the conversation for good.
+                allowance.reserve()
+                text, usage, reasoning = _reply(backend, messages, model)
+                allowance.settle(usage)
+                _count(usage)
+            llm_call_end = _now()
             messages.append({"role": "assistant", "content": text})
 
             banner = (

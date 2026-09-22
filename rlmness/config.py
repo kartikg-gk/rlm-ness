@@ -125,6 +125,10 @@ class Config:
     # Ask an agent to confirm before it hands a sub-agent a large, barely
     # reduced share of its own PROMPT. Delegation pays off on pieces already
     # narrowed; passing the whole thing down buys nothing and is billed twice.
+    # Ask once more, silently, when a reply holds nothing to run, before it
+    # costs a turn. Most such replies come from the serving host dropping
+    # or cutting off what the model wrote, and a second ask is routed anew.
+    enable_resample: bool = True
     enable_handoff_guard: bool = True
     # Below this, an agent's PROMPT is small enough that handing it over whole
     # costs little, and a question about it would cost more than it saves.
@@ -226,6 +230,7 @@ def load_config(
         enable_structured_output=bool(
             raw.get("enable_structured_output", defaults.enable_structured_output)
         ),
+        enable_resample=bool(raw.get("enable_resample", defaults.enable_resample)),
         enable_handoff_guard=bool(
             raw.get("enable_handoff_guard", defaults.enable_handoff_guard)
         ),
