@@ -4,8 +4,8 @@ A Python implementation of Recursive Language Models, from the paper
 [Recursive Language Models](https://arxiv.org/abs/2512.24601) (Zhang, Kraska &
 Khattab), running the model's code in Node and Pyodide.
 
-Your input never enters the model's context. It sits in a Python REPL as
-`PROMPT`; the model writes code to work through it and hands pieces to
+Your full input sits in a Python REPL as `PROMPT`. The model sees an opening
+preview, then writes code to work through the input and hands pieces to
 sub-agents of itself, whose answers come back as plain values in the REPL.
 
 ## Install
@@ -59,9 +59,9 @@ rlmness --runtime subprocess "..."
 rlmness --runtime in-process "..."
 ```
 
-- **`wasm`** (default) — a WebAssembly sandbox with no network and no access to
-  your files. Safe on input you didn't write: fetched pages, uploaded
-  documents, other people's data. Needs `rlmness --setup`; until then runs
+- **`wasm`** (default) — a WebAssembly sandbox that blocks ordinary network
+  and host-file access. It limits what model-written code can reach, but is
+  not a hardened security boundary. Needs `rlmness --setup`; until then runs
   fall back to `subprocess` and say so.
 - **`subprocess`** — a separate Python process. Starts faster and can use any
   package you have installed, but can touch your machine. For input you trust.
