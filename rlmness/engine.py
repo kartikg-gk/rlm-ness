@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import uuid
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -25,7 +26,7 @@ from .briefing import (
     shows_everything,
     system_prompt,
 )
-from .wasm_runtime import WasmRuntime
+from .wasm_runtime import WasmRuntime, wasm_available
 from .tools import describe
 from .in_process import InProcessRuntime
 from .runtime import SubprocessRuntime
@@ -426,6 +427,18 @@ def solve(
     if not config.enable_structured_output and not isinstance(prompt, str):
         prompt = json.dumps(prompt, default=str)
     run_id = run_id or uuid.uuid4().hex
+    if runtime_factory is None and config.runtime == "wasm" and not wasm_available():
+        # The sandbox is the default, and a fresh install has not set it up
+        # yet. Running on a subprocess and saying so beats failing on the
+        # first cell, which is what the command does too.
+        warnings.warn(
+            "wasm is not set up, running on subprocess instead. To use it, "
+            "run `rlmness --setup` (needs Node 18+); to silence this, pass "
+            "Config(runtime='subprocess').",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        config = dataclasses.replace(config, runtime="subprocess")
     runtime_factory = runtime_factory or RUNTIMES[config.runtime]
     # Validated here rather than inside a cell: a bad tool is a caller's
     # mistake and should surface before a single call is paid for. What counts
