@@ -1,5 +1,5 @@
 [project]
-name = "rlm-ness"
+name = "rlmness"
 version = "0.2.1"
 description = "A Recursive Language Model runtime: the model works on your input through code, and hands pieces to sub-agents of itself."
 readme = "README.md"

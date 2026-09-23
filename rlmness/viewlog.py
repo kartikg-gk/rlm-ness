@@ -331,7 +331,7 @@ def _browser():
     try:
         from . import session_view
     except ImportError:
-        print("the browser needs textual: pip install 'rlm-ness[tui]'", file=sys.stderr)
+        print("the browser needs textual: pip install 'rlmness[tui]'", file=sys.stderr)
         return None
     return session_view
 
