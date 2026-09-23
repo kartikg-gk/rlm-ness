@@ -197,7 +197,7 @@ def main(argv=None, *, backend=None) -> int:
             from .events import Broadcast, RunTree
         except ImportError:
             print(
-                "the dashboard needs textual: pip install 'rlm-ness[tui]'",
+                "the dashboard needs textual: pip install 'rlmness[tui]'",
                 file=sys.stderr,
             )
             return 1

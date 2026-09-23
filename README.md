@@ -11,7 +11,7 @@ sub-agents of itself, whose answers come back as plain values in the REPL.
 ## Install
 
 ```bash
-pip install rlm-ness
+pip install rlmness
 export OPENROUTER_API_KEY=sk-or-...        # or ANTHROPIC_API_KEY, DEEPSEEK_API_KEY
 rlmness "How many r's are in strawberry?" --model z-ai/glm-5
 ```
@@ -92,7 +92,7 @@ keeps one only until the program exits.
 ## Watch a run
 
 ```bash
-pip install "rlm-ness[tui]"
+pip install "rlmness[tui]"
 
 rlmness --dashboard "..."                   # live: agents, code, output, variables
 rlmness-viewlog traces/run_x.jsonl --tui    # replay a finished run
