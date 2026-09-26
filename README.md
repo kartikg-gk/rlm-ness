@@ -8,6 +8,8 @@ Your full input sits in a Python REPL as `PROMPT`. The model sees an opening
 preview, then writes code to work through the input and hands pieces to
 sub-agents of itself, whose answers come back as plain values in the REPL.
 
+![How rlmness works](https://raw.githubusercontent.com/kartikg-gk/rlm-ness/main/arch.png)
+
 ## Install
 
 ```bash
