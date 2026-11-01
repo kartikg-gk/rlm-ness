@@ -147,3 +147,14 @@ answer must match). `load_config()` reads the same file the command does.
 ## License
 
 MIT
+
+
+## Background recursive work
+
+Version 0.2.2 adds an optional background-job service for applications embedding
+the solver. Pass `background=Background(...)` to `solve`, importing `Background`
+from `rlmness.background`. The service binds `spawn`, `children`, handle methods,
+and `tell_parent` into each interpreter. Close the service when its owner ends.
+Persistent jobs use independent saved namespaces between follow-up questions;
+they do not inherit the parent's namespace. The same allowance and depth checks
+cover their recursive calls. Embedders may supply a role resolver on the service.
