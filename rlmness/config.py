@@ -114,7 +114,7 @@ class Config:
     # of the right shape passes. Costs one step when the literal happened to
     # be right.
     enable_blind_final_guard: bool = True
-    # A child starts with nothing its parent did not hand it. Turning this on
+    # By default a child only has what its parent passed down. Turning this on
     # makes a child receive its parent's tools when the call does not say.
     inherit_tools: bool = False
     # Refuse a sub-agent call handed to asyncio.gather and name the gather

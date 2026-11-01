@@ -32,8 +32,8 @@ class Allowance:
     # always reports, so these hold where a price is never sent.
     max_completion_tokens: int | None = None
     #: A ceiling on one call, not on the run: input plus output of a single
-    #: call. The whole conversation is sent again every turn, so this is what
-    #: actually bounds how large one agent's context may grow -- a cumulative
+    #: call. The whole conversation is sent again every turn, so this
+    #: caps how far a single agent's context can grow -- a cumulative
     #: total says nothing about whether any single turn got out of hand.
     max_prompt_tokens: int | None = None
     calls: int = 0
