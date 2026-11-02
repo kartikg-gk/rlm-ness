@@ -79,7 +79,7 @@ class _State:
 
 _state = _State()
 
-_IMMUTABLE = (str, bytes, int, float, bool, complex, type(None), tuple, frozenset)
+_IMMUTABLE = (type(None), bool, int, float, complex, str, bytes, tuple, frozenset)
 
 
 def commit(name, note=None):
@@ -107,6 +107,7 @@ def _read_code(code):
         tree = ast.parse(code)
     except SyntaxError:
         return
+    # Definitions anywhere in the block count, not only at its top level.
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             text = ast.get_source_segment(code, node)
@@ -129,10 +130,11 @@ def _read_comments(code):
         tree = ast.parse(code)
     except SyntaxError:
         return
+    # Comments are read from the assignment they sit beside.
     for node in ast.walk(tree):
         targets = []
         if isinstance(node, ast.Assign):
-            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            targets = [item.id for item in node.targets if isinstance(item, ast.Name)]
         elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
             if isinstance(node.target, ast.Name):
                 targets = [node.target.id]

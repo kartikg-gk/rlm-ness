@@ -41,8 +41,9 @@ class _Host:
     """
 
     def __init__(self, node: str = "node"):
+        command = [node, _WORKER]
         self.process = subprocess.Popen(
-            [node, _WORKER],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -174,7 +175,7 @@ class WasmRuntime(ProtocolRuntime):
         session=None,
         batch_only=None,
     ):
-        if shutil.which(node) is None:
+        if not shutil.which(node):
             raise RuntimeError(f"{node!r} is not on PATH")
         host = _shared_host(node)
         # Two different things wear this name. `channel` is this sandbox's
