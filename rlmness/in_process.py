@@ -143,9 +143,8 @@ class InProcessRuntime:
         self._outcome["final"] = None
         error = None
         try:
-            compiled = compile(
-                code, "<cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
-            )
+            awaitable = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+            compiled = compile(code, "<cell>", "exec", flags=awaitable)
             with redirect_stdout(buffer):
                 pending = eval(compiled, self.namespace)
                 if pending is not None:

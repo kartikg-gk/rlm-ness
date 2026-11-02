@@ -15,6 +15,7 @@ _IN = sys.__stdin__
 
 
 _WRITING = threading.Lock()
+_HOST_GONE = "the host has gone away"
 
 
 def _write(obj):
@@ -22,15 +23,14 @@ def _write(obj):
     # request. The lock keeps two of them from interleaving into one line
     # that neither side can parse.
     with _WRITING:
-        _OUT.write(json.dumps(obj, default=str) + '\n')
-        _OUT.flush()
+        print(json.dumps(obj, default=str), file=_OUT, flush=True)
 
 
 def _read():
-    line = _IN.readline()
-    if not line:
-        raise EOFError("host closed the connection")
-    return json.loads(line)
+    received = _IN.readline()
+    if received:
+        return json.loads(received)
+    raise EOFError(_HOST_GONE)
 
 
 # Replies are sorted by a reader thread rather than by whoever happens to be
@@ -86,7 +86,7 @@ def _pump():
         stranded = list(_PENDING.values())
         _PENDING.clear()
     for future in stranded:
-        _settle(future, False, "host closed the connection")
+        _settle(future, False, _HOST_GONE)
 
 
 # The cell's own record of whether FINAL was called this turn. FINAL used to
@@ -188,11 +188,11 @@ def _make_proxy(name, batched=False):
         try:
             _write(
                 {
-                    "op": "bridge",
-                    "name": name,
-                    "args": list(args),
-                    "kwargs": kwargs,
                     "_id": call,
+                    "op": "bridge",
+                    "kwargs": kwargs,
+                    "args": list(args),
+                    "name": name,
                 }
             )
         except BaseException:
@@ -271,7 +271,8 @@ def _run_cell(code, namespace):
     _outcome["final"] = None
     error = None
     try:
-        compiled = compile(code, "<cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        awaitable = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+        compiled = compile(code, "<cell>", "exec", flags=awaitable)
         with redirect_stdout(buffer):
             pending = eval(compiled, namespace)
             if pending is not None:
@@ -292,8 +293,9 @@ def _run_cell(code, namespace):
 
 def main():
     init = _read()
-    if init.get("op") != "init":
-        raise RuntimeError(f"expected init, got {init!r}")
+    kind = init.get("op")
+    if kind != "init":
+        raise RuntimeError(f"the first message must be the setup one: {init!r}")
 
     namespace = {"__name__": "__rlm_cell__", "PROMPT": init.get("prompt", "")}
     batched = init.get("batch_only") or {}

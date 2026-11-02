@@ -17,8 +17,9 @@ import readline from "node:readline";
 // and an installed copy of this file has no node_modules beside it.
 const { loadPyodide } = await import(process.env.RLMNESS_PYODIDE || "pyodide");
 
-function send(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
+function send(record) {
+  const line = JSON.stringify(record);
+  process.stdout.write(`${line}\n`);
 }
 
 const SETUP_PY = `
@@ -213,27 +214,21 @@ def _snapshot():
         return json.dumps([])
 
 async def _run_cell(src):
-    buf = io.StringIO()
+    captured = io.StringIO()
     _outcome["final_given"] = False
     _outcome["final"] = None
-    error = None
+    failure = None
+    awaitable = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
     try:
-        code = compile(src, "<cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
-        with contextlib.redirect_stdout(buf):
-            coro = eval(code, globals())
-            if coro is not None:
-                await coro
+        compiled = compile(src, "<cell>", "exec", flags=awaitable)
+        with contextlib.redirect_stdout(captured):
+            pending = eval(compiled, globals())
+            if pending is not None:
+                await pending
     except BaseException:
-        error = traceback.format_exc()
-    return json.dumps(
-        {
-            "stdout": buf.getvalue(),
-            "final": _outcome["final"],
-            "final_given": _outcome["final_given"],
-            "error": error,
-        },
-        default=str,
-    )
+        failure = traceback.format_exc()
+    report = dict(_outcome, error=failure, stdout=captured.getvalue())
+    return json.dumps(report, default=str)
 `;
 
 // sid -> { py, chain, pending, nextId }
@@ -270,8 +265,8 @@ async function open(sid, msg) {
   // to go through the gather helper rather than asyncio.gather.
   py.globals.set("_BATCH_ONLY_JSON", JSON.stringify(msg.batch_only ?? {}));
   await py.runPythonAsync("_install_batch_guard(_BATCH_ONLY_JSON)");
-  for (const name of msg.bridges || []) {
-    py.globals.set("_bridge_name", name);
+  for (const helper of msg.bridges || []) {
+    py.globals.set("_bridge_name", helper);
     await py.runPythonAsync("globals()[_bridge_name] = _make_proxy(_bridge_name)\n");
   }
   // Only the source crosses, and only now. A later call to a tool is an
@@ -304,7 +299,8 @@ async function handle(msg) {
   if (!box) return;
 
   if (msg.op === "exec") {
-    box.py.globals.set("_CELL_SRC", msg.code ?? "");
+    const source = msg.code ?? "";
+    box.py.globals.set("_CELL_SRC", source);
     const resultJson = await box.py.runPythonAsync("await _run_cell(_CELL_SRC)");
     send({ sid, op: "result", ...JSON.parse(resultJson) });
     return;
@@ -328,13 +324,17 @@ async function handle(msg) {
 }
 
 const lines = readline.createInterface({ input: process.stdin });
-lines.on("line", (line) => {
-  let msg;
+function parsed(text) {
   try {
-    msg = JSON.parse(line);
+    return JSON.parse(text);
   } catch {
-    return;
+    return null;
   }
+}
+
+lines.on("line", (line) => {
+  const msg = parsed(line);
+  if (!msg) return;
   if (msg.op === "shutdown") {
     process.exit(0);
   }
