@@ -8,6 +8,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,6 +109,10 @@ class ProtocolRuntime:
         # cell. While any is, the cell is waiting rather than hung.
         self._bridges_in_flight = 0
         self._bridge_count_lock = threading.Lock()
+        # When the last sub-agent call returned. The cell gets a whole window
+        # after that to use the answer, so a wait that straddles the return
+        # does not count the sub-agent's time against the cell.
+        self._bridge_returned = 0.0
 
         # Tools travel as source and are defined inside the namespace, so a
         # call to one never reaches back across this boundary.
@@ -158,7 +163,8 @@ class ProtocolRuntime:
                 # parent out here killed the tree the moment delegation started
                 # working. The run as a whole is still bounded, by the
                 # allowance's wall clock and by each child's own limits.
-                if self._outstanding_bridges():
+                if self._outstanding_bridges() or (
+                        time.monotonic() - self._bridge_returned < self.timeout):
                     continue
                 self._kill()
                 raise CellTimeout(f"no response within {self.timeout}s")
@@ -192,6 +198,7 @@ class ProtocolRuntime:
         finally:
             with self._bridge_count_lock:
                 self._bridges_in_flight -= 1
+                self._bridge_returned = time.monotonic()
         self._reply(call_id, True, value=value)
 
     def _serve_bridge_async(self, message) -> None:
