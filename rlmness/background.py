@@ -1,5 +1,6 @@
 """Background jobs and parent/child mailboxes for recursive runs."""
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from dataclasses import dataclass, field
 import queue
 import threading
@@ -20,6 +21,8 @@ class Job:
     error: Exception | None = None
     ready: threading.Event = field(default_factory=threading.Event)
     future: object = None
+    state: object = None
+    run_child: Callable | None = None
 
 
 class Background:
@@ -30,6 +33,8 @@ class Background:
         self.lock = threading.RLock()
         self.owners = {}
         self.resolve_role = None
+        self.on_close = []
+        self.node_states = {}
 
     def bindings(self, parent, child):
         def owned(key):
@@ -47,15 +52,17 @@ class Background:
                 if len(self.jobs) >= self.max_agents:
                     raise RuntimeError("background agent limit reached")
                 key = uuid.uuid4().hex
-                job = Job(parent=parent, keep=keep)
+                job = Job(parent=parent, keep=keep, run_child=child)
                 self.jobs[key] = job
             def work():
                 state = Session() if keep else None
+                job.state = state
                 question = task
                 try:
                     while not job.token.is_set():
                         job.status = "running"
-                        job.value = child(data, question, job.token, saved=state, owner=key, model=model)
+                        job.value = (job.run_child or child)(
+                            data, question, job.token, saved=state, owner=key, model=model)
                         job.status = "idle" if keep else "done"
                         job.ready.set()
                         if not keep:
@@ -67,6 +74,8 @@ class Background:
                     job.error = error
                     job.status = "cancelled" if job.token.is_set() else "failed"
                 finally:
+                    if state is not None:
+                        state.close_runtime()
                     if job.token.is_set():
                         job.status = "cancelled"
                     job.ready.set()
@@ -90,6 +99,8 @@ class Background:
             if job.status == "idle":
                 job.ready.clear()
                 job.status = "starting"
+            if job.keep:
+                job.run_child = child
             job.inbox.put(text)
 
         def cancel(key):
@@ -105,6 +116,10 @@ class Background:
                 items, job.outbox = job.outbox, []
             return items
 
+        def delivery(key, receipt):
+            owned(key)
+            return None
+
         def tell(text):
             key = self.owners.get(parent)
             if key is None:
@@ -113,7 +128,7 @@ class Background:
                 self.jobs[key].outbox.append(text)
 
         return {"_spawn": spawn, "_result": result, "_status": lambda key: owned(key).status,
-                "_send": send, "_cancel": cancel, "_messages": messages,
+                "_send": send, "_cancel": cancel, "_messages": messages, "_delivery": delivery,
                 "_children": lambda: [k for k,v in self.jobs.items() if v.parent == parent],
                 "tell_parent": tell}
 
@@ -131,10 +146,18 @@ class Background:
                 items.append(item)
 
     def close(self):
+        for hook in self.on_close:
+            hook()
+        self.on_close.clear()
+        for state in self.node_states.values():
+            state.close_runtime()
+        self.node_states.clear()
         for job in list(self.jobs.values()):
             job.token.set()
             job.inbox.put(None)
             job.ready.set()
+            if job.state is not None:
+                job.state.close_runtime()
         self.pool.shutdown(wait=False, cancel_futures=True)
 
 
@@ -145,6 +168,7 @@ class _AgentHandle:
     async def status(self): return await _status(self.id)
     async def cancel(self): return await _cancel(self.id)
     async def send(self, text): return await _send(self.id, text)
+    async def delivery(self, receipt): return await _delivery(self.id, receipt)
     async def messages(self): return await _messages(self.id)
 async def spawn(task, data=None, keep=False, role=None, model=None):
     return _AgentHandle(await _spawn(task, data, keep, role, model))

@@ -384,6 +384,24 @@ def _accepts(factory, keyword: str) -> bool:
 _add = combine
 
 
+def selected_engine(config, runtime_factory=None):
+    """Which loop runs: Node owns it whenever the sandbox is WebAssembly.
+
+    "auto" picks Node for the wasm runtime when Node and Pyodide are present and
+    the caller's factory (if any) can prepare agents there; the subprocess and
+    in-process runtimes have no Node side, so they keep the Python loop.
+    """
+    if config.engine not in ("auto", "python", "node"):
+        raise ValueError(f"unknown engine {config.engine!r}: use 'auto', 'python' or 'node'")
+    if config.engine != "auto":
+        return config.engine
+    if config.runtime != "wasm":
+        return "python"
+    if runtime_factory is not None and not getattr(runtime_factory, "NODE_PREPARE", None):
+        return "python"
+    return "node" if wasm_available() else "python"
+
+
 def solve(
     prompt,
     backend: ModelClient,
@@ -402,6 +420,7 @@ def solve(
     output_schema=None,
     background=None,
     owner=None,
+    host_functions: Mapping[str, Callable] | None = None,
 ) -> Answer:
     """Answer a question about `prompt`, which the model never sees whole.
 
@@ -417,6 +436,14 @@ def solve(
     a run spends half its steps before it starts.
     """
     config = config or load_config()
+    if depth == 0 and selected_engine(config, runtime_factory) == "node":
+        from .node_engine import solve_on_node
+        return solve_on_node(prompt, backend, instruction=instruction, config=config,
+            runtime_factory=runtime_factory, trace=trace, allowance=allowance,
+            cancel=cancel, tools=tools, run_id=run_id, session=session,
+            output_schema=output_schema, background=background, host_functions=host_functions)
+    if host_functions:
+        raise ValueError("host_functions requires engine='node'")
     # Compiled before anything is started, so a malformed schema is reported
     # as the caller's mistake without a sandbox or a model call being paid for.
     shape = (
@@ -735,7 +762,14 @@ def solve(
         and _accepts(runtime_factory, "batch_only")
     ):
         extra["batch_only"] = {"rlm": "gather_rlm"}
+    persistent = session is not None and getattr(runtime_factory, "PERSISTENT", False)
+    if persistent:
+        previous = getattr(session, "_runtime", None)
+        extra["reuse"] = previous if previous is not None and not previous._closed else None
+        extra["owner_session"] = session
     runtime = runtime_factory(prompt, bridges, config.timeout, prepared, **extra)
+    if persistent:
+        session._runtime = runtime
     if background is not None:
         from .background import PRELUDE
         installed = runtime.execute(PRELUDE)
@@ -987,7 +1021,10 @@ def solve(
         )
         raise
     finally:
-        runtime.close()
+        if not persistent or runtime._closed:
+            runtime.close()
+            if persistent:
+                session._runtime = None
 
 
 def _reply(backend, messages, model):

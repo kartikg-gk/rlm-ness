@@ -71,6 +71,8 @@ class Config:
     # Needs Node and `npm install`; the command falls back to subprocess, and
     # says so, when those are missing and nobody asked for wasm by name.
     runtime: str = "wasm"
+    # "auto": Node owns the loop and recursion for the wasm sandbox, Python otherwise.
+    engine: str = "auto"
     provider: str = "openrouter"
     api_max_retries: int = 3
     api_backoff: float = 0.5
@@ -194,6 +196,7 @@ def load_config(
         # Caller beats file: the caller has already folded in the flag and the
         # environment, both of which are more specific than a checked-in file.
         runtime=runtime or raw.get("runtime") or defaults.runtime,
+        engine=raw.get("engine") or defaults.engine,
         provider=provider or raw.get("provider") or defaults.provider,
         api_max_retries=int(raw.get("api_max_retries", defaults.api_max_retries)),
         api_backoff=float(raw.get("api_backoff", defaults.api_backoff)),

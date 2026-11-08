@@ -259,13 +259,10 @@ async def _drive(pending):
     """
     global _LOOP
     _LOOP = asyncio.get_running_loop()
-    try:
-        return await pending
-    finally:
-        _LOOP = None
+    return await pending
 
 
-def _run_cell(code, namespace):
+async def _run_cell_async(code, namespace):
     buffer = io.StringIO()
     _outcome["final_given"] = False
     _outcome["final"] = None
@@ -276,7 +273,7 @@ def _run_cell(code, namespace):
         with redirect_stdout(buffer):
             pending = eval(compiled, namespace)
             if pending is not None:
-                asyncio.run(_drive(pending))
+                await _drive(pending)
     except BaseException:
         error = traceback.format_exc()
     # Read after the try, not out of it: a mistake in code written after FINAL
@@ -291,13 +288,31 @@ def _run_cell(code, namespace):
     }
 
 
+def _run_cell(code, namespace):
+    return asyncio.run_coroutine_threadsafe(_run_cell_async(code, namespace), _LOOP).result()
+
+
+class _BackgroundOutput(io.StringIO):
+    def write(self, text):
+        content = (self.getvalue() + text)[-65536:]
+        self.seek(0)
+        self.truncate()
+        super().write(content)
+        return len(text)
+
+
 def main():
+    global _LOOP
+    _LOOP = asyncio.new_event_loop()
+    threading.Thread(target=_LOOP.run_forever, daemon=True).start()
+    sys.stdout = _BackgroundOutput()
     init = _read()
     kind = init.get("op")
     if kind != "init":
         raise RuntimeError(f"the first message must be the setup one: {init!r}")
 
     namespace = {"__name__": "__rlm_cell__", "PROMPT": init.get("prompt", "")}
+    bridge_names = set(init.get("bridges", []))
     batched = init.get("batch_only") or {}
     for name in init.get("bridges", []):
         namespace[name] = _make_proxy(name, name in batched)
@@ -340,6 +355,17 @@ def main():
         operation = command.get("op")
         if operation == "shutdown":
             return
+        if operation == "rebind":
+            names = set(command.get("bridges", []))
+            namespace["PROMPT"] = command.get("prompt", "")
+            for name in bridge_names - names:
+                namespace.pop(name, None)
+            for name in names:
+                namespace[name] = _make_proxy(name, name in batched)
+            bridge_names = names
+            _install_tools(command.get("tools", []), namespace)
+            _write({"op": "ready"})
+            continue
         if operation == "snapshot":
             describe = summariser.get("summarise")
             try:
