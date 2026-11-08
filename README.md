@@ -149,6 +149,14 @@ answer must match). `load_config()` reads the same file the command does.
 MIT
 
 
+## Which loop runs
+
+With the default WebAssembly sandbox, the whole agent loop runs in Node: model calls,
+code extraction, recursion, batches, background agents and the shared budget, with
+one Pyodide interpreter per agent in its own worker. Set `engine: python` in
+`rlmness.yaml` (or `Config(engine="python")`) to run the loop in Python instead; the
+subprocess and in-process runtimes always use the Python loop.
+
 ## Background recursive work
 
 Version 0.2.2 adds an optional background-job service for applications embedding

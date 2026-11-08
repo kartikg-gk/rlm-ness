@@ -1,15 +1,4 @@
-"""CPython compiled to WebAssembly, several sandboxes to one Node process.
-
-A sandbox costs about 122MB when it owns a whole Node process and about 45MB
-when it is the second interpreter inside one — the runtime around it is the
-expensive part, and it buys nothing per agent. A fan-out of eight is the
-difference between roughly a gigabyte and roughly four hundred megabytes.
-
-The isolation is unchanged: each sandbox is its own Pyodide interpreter with
-its own globals, so two agents can no more see each other than if they lived
-in separate processes. What they share is the host that carries their
-messages, and the wire between them stays plain JSON.
-"""
+"""Isolated Pyodide workers multiplexed through one Node broker process."""
 
 from __future__ import annotations
 
@@ -25,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from .runtime import ProtocolRuntime, RuntimeGone
+from .environment import execution_environment
 
 _WORKER = str(Path(__file__).with_name("wasm_guest.mjs"))
 
@@ -51,7 +41,7 @@ class _Host:
             encoding="utf-8",
             bufsize=1,
             cwd=str(node_root()),
-            env={**os.environ, "RLMNESS_PYODIDE": pyodide_entry().as_uri()},
+            env=execution_environment({"RLMNESS_PYODIDE": pyodide_entry().as_uri()}),
         )
         self._inboxes: dict[str, queue.Queue] = {}
         self._lock = threading.Lock()
@@ -69,7 +59,7 @@ class _Host:
             with self._lock:
                 inbox = self._inboxes.get(message.get("sid"))
             if inbox is not None:
-                inbox.put(message)
+                inbox.put(None if message.get("op") == "gone" else message)
         # The host is gone; wake everyone still waiting rather than let them
         # sit until their timeout.
         with self._lock:
@@ -144,8 +134,10 @@ class _Session:
         self.host.send({**message, "sid": self.sid})
 
     def kill(self):
-        # One sandbox failing is not a reason to take down the others sharing
-        # this process, so only its own registration goes.
+        try:
+            self.send({"op": "terminate"})
+        except RuntimeGone:
+            pass
         self.host.release(self.sid)
 
     def shutdown(self):
@@ -157,12 +149,12 @@ class _Session:
 
 
 class WasmRuntime(ProtocolRuntime):
+    ISOLATED = True
     #: Whether the cell runs without syscalls.
     SEALED = True
     #: Its own interpreter, so a tool has to be rebuilt from text.
     NEEDS_SOURCE = True
-    #: Sandboxes share one host process now, so an extra one costs about 45MB
-    #: rather than 122MB. Still not free, so still bounded.
+    #: Each interpreter owns a worker; admission remains explicitly bounded.
     MAX_LIVE = 16
 
     def __init__(

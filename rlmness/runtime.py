@@ -228,6 +228,20 @@ class ProtocolRuntime:
             # exception in a pool thread.
             pass
 
+    def rebind(self, prompt, bridges, timeout, tools=()):
+        self.bridges = dict(bridges)
+        self.timeout = timeout
+        self._write({"op": "rebind", "prompt": prompt, "bridges": list(self.bridges),
+                     "tools": [{"name": tool.name, "source": tool.source} for tool in tools]})
+        while True:
+            message = self._receive()
+            if message.get("op") == "ready":
+                return
+            if message.get("op") == "bridge":
+                self._serve_bridge_async(message)
+            else:
+                raise RuntimeGone("runtime could not accept its next turn")
+
     def execute(self, code: str) -> CellOutcome:
         self._write({"op": "exec", "code": code})
         while True:
@@ -314,7 +328,8 @@ class SubprocessRuntime(ProtocolRuntime):
         session=None,
         batch_only=None,
     ):
-        environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
+        from .environment import execution_environment
+        environment = execution_environment({"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"})
         process = subprocess.Popen(
             [sys.executable, "-I", _RUNNER],
             stdin=subprocess.PIPE,
