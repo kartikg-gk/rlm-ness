@@ -384,6 +384,24 @@ def _accepts(factory, keyword: str) -> bool:
 _add = combine
 
 
+def selected_engine(config, runtime_factory=None):
+    """Which loop runs: Node owns it whenever the sandbox is WebAssembly.
+
+    "auto" picks Node for the wasm runtime when Node and Pyodide are present and
+    the caller's factory (if any) can prepare agents there; the subprocess and
+    in-process runtimes have no Node side, so they keep the Python loop.
+    """
+    if config.engine not in ("auto", "python", "node"):
+        raise ValueError(f"unknown engine {config.engine!r}: use 'auto', 'python' or 'node'")
+    if config.engine != "auto":
+        return config.engine
+    if config.runtime != "wasm":
+        return "python"
+    if runtime_factory is not None and not getattr(runtime_factory, "NODE_PREPARE", None):
+        return "python"
+    return "node" if wasm_available() else "python"
+
+
 def solve(
     prompt,
     backend: ModelClient,
@@ -400,6 +418,9 @@ def solve(
     parent_run_id: str | None = None,
     session=None,
     output_schema=None,
+    background=None,
+    owner=None,
+    host_functions: Mapping[str, Callable] | None = None,
 ) -> Answer:
     """Answer a question about `prompt`, which the model never sees whole.
 
@@ -415,6 +436,14 @@ def solve(
     a run spends half its steps before it starts.
     """
     config = config or load_config()
+    if depth == 0 and selected_engine(config, runtime_factory) == "node":
+        from .node_engine import solve_on_node
+        return solve_on_node(prompt, backend, instruction=instruction, config=config,
+            runtime_factory=runtime_factory, trace=trace, allowance=allowance,
+            cancel=cancel, tools=tools, run_id=run_id, session=session,
+            output_schema=output_schema, background=background, host_functions=host_functions)
+    if host_functions:
+        raise ValueError("host_functions requires engine='node'")
     # Compiled before anything is started, so a malformed schema is reported
     # as the caller's mistake without a sandbox or a model call being paid for.
     shape = (
@@ -495,6 +524,8 @@ def solve(
         an object is not a piece of the data, and turning it into text would
         hide the mistake that sent it.
         """
+        if background is not None and (piece is None or isinstance(piece, (bool, int, float))):
+            return piece
         if isinstance(piece, str):
             return piece
         if isinstance(piece, (dict, list)):
@@ -571,7 +602,7 @@ def solve(
         if not allowed:
             raise RuntimeError(REFUSED_HANDOFF.format(reason=reason))
 
-    def _child(piece, instruction=None, token=None, granted=None, schema=None):
+    def _child(piece, instruction=None, token=None, granted=None, schema=None, saved=None, owner=None, model=None):
         # What a sub-agent spent is part of what this agent spent. Returning
         # only its answer left the reported cost at the root's own calls, so a
         # run that fanned out showed a fraction of its bill.
@@ -579,7 +610,7 @@ def solve(
             _handed(piece),
             backend,
             instruction=instruction,
-            config=config,
+            config=dataclasses.replace(config, sub_agent=model) if model else config,
             runtime_factory=runtime_factory,
             trace=trace,
             allowance=allowance,
@@ -587,7 +618,7 @@ def solve(
             cancel=token,
             tools=_for_child(granted),
             parent_run_id=run_id,
-            output_schema=schema,
+            output_schema=schema, session=saved, background=background, owner=owner,
         )
         _count(answer.usage)
         return answer.output
@@ -664,6 +695,15 @@ def solve(
     bridges: dict[str, Callable] = {}
     if config.enable_delegation:
         bridges.update({"rlm": _rlm, "gather_rlm": _gather_rlm})
+    if background is not None:
+        if owner is not None:
+            background.owners[run_id] = owner
+        def background_child(piece, instruction=None, token=None, **options):
+            if not can_recurse:
+                raise RuntimeError(TOO_DEEP)
+            _permitted([piece])
+            return _child(piece, instruction, token, **options)
+        bridges.update(background.bindings(run_id, background_child))
     messages = [
         {
             "role": "system",
@@ -708,7 +748,7 @@ def solve(
     # their own empty namespace: a sub-agent is given a piece and a question,
     # and inheriting the parent's working variables would hand it the parent's
     # half-finished thinking as though it were data.
-    carried = session.state_for_guest() if (session is not None and depth == 0) else None
+    carried = session.state_for_guest() if (session is not None) else None
     # Passed as a keyword and only when there is one, so a runtime or a test
     # double that predates sessions keeps its old signature.
     extra = {"session": carried} if carried is not None else {}
@@ -722,7 +762,20 @@ def solve(
         and _accepts(runtime_factory, "batch_only")
     ):
         extra["batch_only"] = {"rlm": "gather_rlm"}
+    persistent = session is not None and getattr(runtime_factory, "PERSISTENT", False)
+    if persistent:
+        previous = getattr(session, "_runtime", None)
+        extra["reuse"] = previous if previous is not None and not previous._closed else None
+        extra["owner_session"] = session
     runtime = runtime_factory(prompt, bridges, config.timeout, prepared, **extra)
+    if persistent:
+        session._runtime = runtime
+    if background is not None:
+        from .background import PRELUDE
+        installed = runtime.execute(PRELUDE)
+        if installed.error:
+            runtime.close()
+            raise RuntimeError(installed.error)
 
     def _snapshot(step: int) -> None:
         """Ask the runtime what is bound, and only if someone is watching.
@@ -742,9 +795,9 @@ def solve(
         emit(trace, "namespace_changed", run_id=run_id, step=step, variables=variables)
 
     _session_preamble = (
-        session.preamble() if (session is not None and depth == 0) else ""
+        session.preamble() if (session is not None) else ""
     )
-    if session is not None and depth == 0:
+    if session is not None:
         # Written down before a single step runs, so a run that dies leaves a
         # record that it was asked at all. The next run's preamble says so,
         # and says the variables of the dead one may still be here.
@@ -759,7 +812,7 @@ def solve(
         work that came before it, and a run that is killed outright never
         reaches an end to be saved at.
         """
-        if session is None or depth != 0:
+        if session is None:
             return
         session.absorb(
             runtime.sweep(code_text),
@@ -789,7 +842,7 @@ def solve(
         # preamble. It is a report of what is bound right now, and the model
         # should read it in the same place it reads everything else it knows
         # about the namespace.
-        if session is not None and depth == 0:
+        if session is not None:
             shown += session.probe(
                 getattr(runtime, "restore_failed", ()),
                 [tool.name for tool in prepared],
@@ -819,6 +872,9 @@ def solve(
     try:
         _open()
         for step in range(1, config.max_steps + 1):
+            if background is not None:
+                for message in background.drain(run_id):
+                    messages.append({"role": "user", "content": str(message)})
             _abort_if_cancelled()
             allowance.reserve()
             llm_call_start = _now()
@@ -927,7 +983,7 @@ def solve(
                 )
                 emit(trace, "run_completed", run_id=run_id, result=cell.final)
                 _keep(step, code, not cell.error)
-                if session is not None and depth == 0:
+                if session is not None:
                     session.settled(
                         instruction or str(prompt), cell.final,
                         trace=getattr(trace, "path", None), run_id=run_id,
@@ -965,7 +1021,10 @@ def solve(
         )
         raise
     finally:
-        runtime.close()
+        if not persistent or runtime._closed:
+            runtime.close()
+            if persistent:
+                session._runtime = None
 
 
 def _reply(backend, messages, model):

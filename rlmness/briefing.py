@@ -205,8 +205,8 @@ A module that reaches for either still imports — it fails when you call it —
 so work from PROMPT and what is already here rather than fetching or reading.
 
 Third-party packages are not installed: no pandas, no numpy, no requests. The
-Python standard library is, so parse with it: `csv` for CSV or TSV,
-`xml.etree.ElementTree` for XML, `tomllib` for TOML, `json` for JSON.
+Python standard library is, and it reads the common formats: `json`, `csv`
+(tabs too), `tomllib`, and `xml.etree.ElementTree`.
 """
 
 

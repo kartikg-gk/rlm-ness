@@ -1,24 +1,18 @@
-// The WASM guest side: one process hosting many sandboxes.
-//
-// Each sandbox is its own Pyodide interpreter with its own globals, so two
-// agents can no more see each other than if they lived in separate processes.
-// What they share is the Node runtime around them, which is the part that
-// costs 34MB and buys nothing per agent: a second interpreter in this process
-// costs about 45MB, against 122MB for a second process holding one.
-//
-// Every message carries `sid`, naming which sandbox it belongs to. Work is
-// chained per sandbox rather than globally, so one agent's slow cell does not
-// hold up another's — which is the whole point of a fan-out.
+// A broker routes each sandbox to a separate worker and Pyodide interpreter.
+// Worker termination is scoped to its sandbox, including a CPU-bound cell.
 
 import process from "node:process";
 import readline from "node:readline";
+import { isMainThread, parentPort, Worker } from "node:worker_threads";
 
 // Named by the host, because a bare "pyodide" is looked up beside this file,
 // and an installed copy of this file has no node_modules beside it.
-const { loadPyodide } = await import(process.env.RLMNESS_PYODIDE || "pyodide");
+const loadPyodide = isMainThread ? null :
+  (await import(process.env.RLMNESS_PYODIDE || "pyodide")).loadPyodide;
 
-function send(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
+function send(record) {
+  if (parentPort) parentPort.postMessage(record);
+  else process.stdout.write(`${JSON.stringify(record)}\n`);
 }
 
 const SETUP_PY = `
@@ -213,27 +207,21 @@ def _snapshot():
         return json.dumps([])
 
 async def _run_cell(src):
-    buf = io.StringIO()
+    captured = io.StringIO()
     _outcome["final_given"] = False
     _outcome["final"] = None
-    error = None
+    failure = None
+    awaitable = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
     try:
-        code = compile(src, "<cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
-        with contextlib.redirect_stdout(buf):
-            coro = eval(code, globals())
-            if coro is not None:
-                await coro
+        compiled = compile(src, "<cell>", "exec", flags=awaitable)
+        with contextlib.redirect_stdout(captured):
+            pending = eval(compiled, globals())
+            if pending is not None:
+                await pending
     except BaseException:
-        error = traceback.format_exc()
-    return json.dumps(
-        {
-            "stdout": buf.getvalue(),
-            "final": _outcome["final"],
-            "final_given": _outcome["final_given"],
-            "error": error,
-        },
-        default=str,
-    )
+        failure = traceback.format_exc()
+    report = dict(_outcome, error=failure, stdout=captured.getvalue())
+    return json.dumps(report, default=str)
 `;
 
 // sid -> { py, chain, pending, nextId }
@@ -244,7 +232,8 @@ async function open(sid, msg) {
   py.setStdout({ batched: () => {} });
   py.setStderr({ batched: () => {} });
 
-  const box = { py, chain: Promise.resolve(), pending: new Map(), nextId: 1 };
+  const box = { py, chain: Promise.resolve(), pending: new Map(), nextId: 1,
+                helpers: new Set(msg.bridges || []) };
   sandboxes.set(sid, box);
 
   // Arguments and results cross the FFI as JSON strings: auto-conversion turns
@@ -270,8 +259,8 @@ async function open(sid, msg) {
   // to go through the gather helper rather than asyncio.gather.
   py.globals.set("_BATCH_ONLY_JSON", JSON.stringify(msg.batch_only ?? {}));
   await py.runPythonAsync("_install_batch_guard(_BATCH_ONLY_JSON)");
-  for (const name of msg.bridges || []) {
-    py.globals.set("_bridge_name", name);
+  for (const helper of msg.bridges || []) {
+    py.globals.set("_bridge_name", helper);
     await py.runPythonAsync("globals()[_bridge_name] = _make_proxy(_bridge_name)\n");
   }
   // Only the source crosses, and only now. A later call to a tool is an
@@ -303,8 +292,27 @@ async function handle(msg) {
   const box = sandboxes.get(sid);
   if (!box) return;
 
+  if (msg.op === "rebind") {
+    box.py.globals.set("_PROMPT_JSON", JSON.stringify(msg.prompt ?? ""));
+    await box.py.runPythonAsync("PROMPT = json.loads(_PROMPT_JSON)");
+    const names = new Set(msg.bridges || []);
+    for (const name of box.helpers) {
+      if (!names.has(name)) box.py.globals.delete(name);
+    }
+    for (const name of names) {
+      box.py.globals.set("_bridge_name", name);
+      await box.py.runPythonAsync("globals()[_bridge_name] = _make_proxy(_bridge_name)");
+    }
+    box.helpers = names;
+    box.py.globals.set("_TOOLS_JSON", JSON.stringify(msg.tools ?? []));
+    await box.py.runPythonAsync("_install_tools(_TOOLS_JSON)");
+    send({ sid, op: "ready" });
+    return;
+  }
+
   if (msg.op === "exec") {
-    box.py.globals.set("_CELL_SRC", msg.code ?? "");
+    const source = msg.code ?? "";
+    box.py.globals.set("_CELL_SRC", source);
     const resultJson = await box.py.runPythonAsync("await _run_cell(_CELL_SRC)");
     send({ sid, op: "result", ...JSON.parse(resultJson) });
     return;
@@ -327,14 +335,16 @@ async function handle(msg) {
   }
 }
 
-const lines = readline.createInterface({ input: process.stdin });
-lines.on("line", (line) => {
-  let msg;
+function parsed(text) {
   try {
-    msg = JSON.parse(line);
+    return JSON.parse(text);
   } catch {
-    return;
+    return null;
   }
+}
+
+function dispatch(msg) {
+  if (!msg) return;
   if (msg.op === "shutdown") {
     process.exit(0);
   }
@@ -364,6 +374,52 @@ lines.on("line", (line) => {
     send({ sid: msg.sid, op: "result", stdout: "", final: null, final_given: false,
            error: String((error && error.stack) || error) });
   });
-});
+}
 
-process.stdin.on("end", () => process.exit(0));
+if (isMainThread) {
+  const workers = new Map();
+  const lines = readline.createInterface({ input: process.stdin });
+  async function shutdown() {
+    await Promise.all([...workers.values()].map((worker) => worker.terminate()));
+    process.exit(0);
+  }
+  lines.on("line", (line) => {
+    const msg = parsed(line);
+    if (!msg) return;
+    if (msg.op === "shutdown") { shutdown(); return; }
+    if (msg.op === "close" || msg.op === "terminate") {
+      const worker = workers.get(msg.sid);
+      workers.delete(msg.sid);
+      if (worker) worker.terminate();
+      send({ sid: msg.sid, op: "closed" });
+      return;
+    }
+    if (msg.op === "init") {
+      if (workers.has(msg.sid)) {
+        send({ sid: msg.sid, op: "failed", error: "Sandbox already exists" });
+        return;
+      }
+      const worker = new Worker(new URL(import.meta.url), { stdout: true, stderr: true });
+      workers.set(msg.sid, worker);
+      worker.stdout.resume();
+      worker.stderr.resume();
+      worker.on("message", send);
+      worker.on("error", () => {
+        if (workers.get(msg.sid) === worker) {
+          workers.delete(msg.sid);
+          send({ sid: msg.sid, op: "gone" });
+        }
+      });
+      worker.on("exit", () => {
+        if (workers.get(msg.sid) === worker) {
+          workers.delete(msg.sid);
+          send({ sid: msg.sid, op: "gone" });
+        }
+      });
+    }
+    workers.get(msg.sid)?.postMessage(msg);
+  });
+  process.stdin.on("end", shutdown);
+} else {
+  parentPort.on("message", dispatch);
+}

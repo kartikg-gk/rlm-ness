@@ -15,6 +15,7 @@ _IN = sys.__stdin__
 
 
 _WRITING = threading.Lock()
+_HOST_GONE = "the host has gone away"
 
 
 def _write(obj):
@@ -22,15 +23,14 @@ def _write(obj):
     # request. The lock keeps two of them from interleaving into one line
     # that neither side can parse.
     with _WRITING:
-        _OUT.write(json.dumps(obj, default=str) + '\n')
-        _OUT.flush()
+        print(json.dumps(obj, default=str), file=_OUT, flush=True)
 
 
 def _read():
-    line = _IN.readline()
-    if not line:
-        raise EOFError("host closed the connection")
-    return json.loads(line)
+    received = _IN.readline()
+    if received:
+        return json.loads(received)
+    raise EOFError(_HOST_GONE)
 
 
 # Replies are sorted by a reader thread rather than by whoever happens to be
@@ -86,7 +86,7 @@ def _pump():
         stranded = list(_PENDING.values())
         _PENDING.clear()
     for future in stranded:
-        _settle(future, False, "host closed the connection")
+        _settle(future, False, _HOST_GONE)
 
 
 # The cell's own record of whether FINAL was called this turn. FINAL used to
@@ -188,11 +188,11 @@ def _make_proxy(name, batched=False):
         try:
             _write(
                 {
-                    "op": "bridge",
-                    "name": name,
-                    "args": list(args),
-                    "kwargs": kwargs,
                     "_id": call,
+                    "op": "bridge",
+                    "kwargs": kwargs,
+                    "args": list(args),
+                    "name": name,
                 }
             )
         except BaseException:
@@ -259,23 +259,21 @@ async def _drive(pending):
     """
     global _LOOP
     _LOOP = asyncio.get_running_loop()
-    try:
-        return await pending
-    finally:
-        _LOOP = None
+    return await pending
 
 
-def _run_cell(code, namespace):
+async def _run_cell_async(code, namespace):
     buffer = io.StringIO()
     _outcome["final_given"] = False
     _outcome["final"] = None
     error = None
     try:
-        compiled = compile(code, "<cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        awaitable = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+        compiled = compile(code, "<cell>", "exec", flags=awaitable)
         with redirect_stdout(buffer):
             pending = eval(compiled, namespace)
             if pending is not None:
-                asyncio.run(_drive(pending))
+                await _drive(pending)
     except BaseException:
         error = traceback.format_exc()
     # Read after the try, not out of it: a mistake in code written after FINAL
@@ -290,12 +288,31 @@ def _run_cell(code, namespace):
     }
 
 
+def _run_cell(code, namespace):
+    return asyncio.run_coroutine_threadsafe(_run_cell_async(code, namespace), _LOOP).result()
+
+
+class _BackgroundOutput(io.StringIO):
+    def write(self, text):
+        content = (self.getvalue() + text)[-65536:]
+        self.seek(0)
+        self.truncate()
+        super().write(content)
+        return len(text)
+
+
 def main():
+    global _LOOP
+    _LOOP = asyncio.new_event_loop()
+    threading.Thread(target=_LOOP.run_forever, daemon=True).start()
+    sys.stdout = _BackgroundOutput()
     init = _read()
-    if init.get("op") != "init":
-        raise RuntimeError(f"expected init, got {init!r}")
+    kind = init.get("op")
+    if kind != "init":
+        raise RuntimeError(f"the first message must be the setup one: {init!r}")
 
     namespace = {"__name__": "__rlm_cell__", "PROMPT": init.get("prompt", "")}
+    bridge_names = set(init.get("bridges", []))
     batched = init.get("batch_only") or {}
     for name in init.get("bridges", []):
         namespace[name] = _make_proxy(name, name in batched)
@@ -338,6 +355,17 @@ def main():
         operation = command.get("op")
         if operation == "shutdown":
             return
+        if operation == "rebind":
+            names = set(command.get("bridges", []))
+            namespace["PROMPT"] = command.get("prompt", "")
+            for name in bridge_names - names:
+                namespace.pop(name, None)
+            for name in names:
+                namespace[name] = _make_proxy(name, name in batched)
+            bridge_names = names
+            _install_tools(command.get("tools", []), namespace)
+            _write({"op": "ready"})
+            continue
         if operation == "snapshot":
             describe = summariser.get("summarise")
             try:

@@ -147,3 +147,22 @@ answer must match). `load_config()` reads the same file the command does.
 ## License
 
 MIT
+
+
+## Which loop runs
+
+With the default WebAssembly sandbox, the whole agent loop runs in Node: model calls,
+code extraction, recursion, batches, background agents and the shared budget, with
+one Pyodide interpreter per agent in its own worker. Set `engine: python` in
+`rlmness.yaml` (or `Config(engine="python")`) to run the loop in Python instead; the
+subprocess and in-process runtimes always use the Python loop.
+
+## Background recursive work
+
+Version 0.2.2 adds an optional background-job service for applications embedding
+the solver. Pass `background=Background(...)` to `solve`, importing `Background`
+from `rlmness.background`. The service binds `spawn`, `children`, handle methods,
+and `tell_parent` into each interpreter. Close the service when its owner ends.
+Persistent jobs use independent saved namespaces between follow-up questions;
+they do not inherit the parent's namespace. The same allowance and depth checks
+cover their recursive calls. Embedders may supply a role resolver on the service.

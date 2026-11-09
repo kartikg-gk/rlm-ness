@@ -8,6 +8,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,6 +109,10 @@ class ProtocolRuntime:
         # cell. While any is, the cell is waiting rather than hung.
         self._bridges_in_flight = 0
         self._bridge_count_lock = threading.Lock()
+        # When the last sub-agent call returned. The cell gets a whole window
+        # after that to use the answer, so a wait that straddles the return
+        # does not count the sub-agent's time against the cell.
+        self._bridge_returned = 0.0
 
         # Tools travel as source and are defined inside the namespace, so a
         # call to one never reaches back across this boundary.
@@ -158,7 +163,8 @@ class ProtocolRuntime:
                 # parent out here killed the tree the moment delegation started
                 # working. The run as a whole is still bounded, by the
                 # allowance's wall clock and by each child's own limits.
-                if self._outstanding_bridges():
+                if self._outstanding_bridges() or (
+                        time.monotonic() - self._bridge_returned < self.timeout):
                     continue
                 self._kill()
                 raise CellTimeout(f"no response within {self.timeout}s")
@@ -192,6 +198,7 @@ class ProtocolRuntime:
         finally:
             with self._bridge_count_lock:
                 self._bridges_in_flight -= 1
+                self._bridge_returned = time.monotonic()
         self._reply(call_id, True, value=value)
 
     def _serve_bridge_async(self, message) -> None:
@@ -227,6 +234,20 @@ class ProtocolRuntime:
             # nobody left to tell, and raising here would only strand the
             # exception in a pool thread.
             pass
+
+    def rebind(self, prompt, bridges, timeout, tools=()):
+        self.bridges = dict(bridges)
+        self.timeout = timeout
+        self._write({"op": "rebind", "prompt": prompt, "bridges": list(self.bridges),
+                     "tools": [{"name": tool.name, "source": tool.source} for tool in tools]})
+        while True:
+            message = self._receive()
+            if message.get("op") == "ready":
+                return
+            if message.get("op") == "bridge":
+                self._serve_bridge_async(message)
+            else:
+                raise RuntimeGone("runtime could not accept its next turn")
 
     def execute(self, code: str) -> CellOutcome:
         self._write({"op": "exec", "code": code})
@@ -314,7 +335,8 @@ class SubprocessRuntime(ProtocolRuntime):
         session=None,
         batch_only=None,
     ):
-        environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
+        from .environment import execution_environment
+        environment = execution_environment({"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"})
         process = subprocess.Popen(
             [sys.executable, "-I", _RUNNER],
             stdin=subprocess.PIPE,

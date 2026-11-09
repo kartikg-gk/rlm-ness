@@ -52,6 +52,13 @@ class Answered:
 
 @dataclass
 class Session:
+    _runtime: Any = field(default=None, init=False, compare=False, repr=False)
+
+    def close_runtime(self):
+        runtime, self._runtime = self._runtime, None
+        if runtime is not None:
+            runtime.close()
+
     version: int = VERSION
     answered: list[Answered] = field(default_factory=list)
     #: Set while a question is being worked on and cleared when it is
@@ -203,6 +210,7 @@ class Session:
         The file is left alone until the next save, so clearing and then
         crashing leaves the old state readable rather than deleted.
         """
+        self.close_runtime()
         self.answered = []
         self.asking = None
         self.cells = []

@@ -28,8 +28,8 @@ def as_json_schema(spec) -> dict:
         from pydantic import BaseModel, TypeAdapter
     except ImportError:
         raise SchemaError(
-            "output_schema must be a JSON Schema dict or one of str, int, float, "
-            "bool, list, dict. Install pydantic to pass a model or a generic type."
+            "output_schema takes a JSON Schema dict or one of str, int, float, bool, "
+            "list, dict; a model or a generic type needs pydantic installed."
         ) from None
     if isinstance(spec, type) and issubclass(spec, BaseModel):
         return spec.model_json_schema()
