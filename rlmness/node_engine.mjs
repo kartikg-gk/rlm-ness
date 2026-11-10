@@ -197,6 +197,70 @@ class Budget {
   }
 }
 
+// A batch admits at most width active branches. Parked branches keep their
+// interpreter but return the permit and reacquire it before resuming inference.
+class FanoutSlots {
+  constructor(width, token) {
+    this.width = width;
+    this.token = token;
+    this.active = 0;
+    this.starting = new Map();
+    this.resuming = new Map();
+  }
+
+  acquire(resuming) {
+    if (this.token.cancelled) {
+      return Promise.reject(new EngineError("Abandoned", this.token.reason));
+    }
+    if (this.active < this.width) {
+      this.active += 1;
+      return Promise.resolve();
+    }
+    const queue = resuming ? this.resuming : this.starting;
+    return new Promise((resolve, reject) => {
+      const cancel = (reason) => {
+        queue.delete(cancel);
+        reject(new EngineError("Abandoned", reason));
+      };
+      queue.set(cancel, resolve);
+      this.token.waiters.add(cancel);
+    });
+  }
+
+  release() {
+    for (const queue of [this.resuming, this.starting]) {
+      const waiting = queue.entries().next();
+      if (waiting.done) continue;
+      const [cancel, admit] = waiting.value;
+      queue.delete(cancel);
+      this.token.waiters.delete(cancel);
+      admit();
+      return;
+    }
+    this.active -= 1;
+  }
+
+  lease(budget) {
+    let held = null;
+    const acquire = async (resuming = false) => {
+      await this.acquire(resuming);
+      held = budget.claimSlot();
+    };
+    const release = () => {
+      if (held === null) return;
+      budget.releaseSlot(held);
+      held = null;
+      this.release();
+    };
+    return { acquire, release, park: async (wait) => {
+      release();
+      const result = await wait();
+      await acquire(true);
+      return result;
+    } };
+  }
+}
+
 function emptySpend() {
   return {
     prompt_tokens: 0, completion_tokens: 0, total_tokens: 0,
@@ -871,6 +935,7 @@ async function runAgent(run, spec) {
       schema: schema ?? null,
       sessionId: extra.sessionId ?? null,
       owner: extra.owner ?? null,
+      lane: extra.lane,
       token,
     });
     total = addSpend(total, answer.usage);
@@ -881,24 +946,21 @@ async function runAgent(run, spec) {
     if (!items.length) return [];
     const token = new Token(agent.token);
     const width = Math.min(items.length, Math.max(1, config.max_concurrent));
+    const slots = new FanoutSlots(width, token);
     const results = new Array(items.length);
-    let next = 0;
     let failure = null;
-    const worker = async () => {
-      while (next < items.length && !failure) {
-        const index = next++;
-        const held = budget.claimSlot();
-        try {
-          results[index] = await work(items[index], token);
-        } catch (error) {
-          if (!failure || failure.name === "Abandoned") failure = error;
-          token.cancel("a sibling failed; this branch was abandoned");
-        } finally {
-          budget.releaseSlot(held);
-        }
+    await Promise.all(items.map(async (item, index) => {
+      const lane = slots.lease(budget);
+      try {
+        await lane.acquire();
+        if (!failure) results[index] = await work(item, token, lane);
+      } catch (error) {
+        if (!failure || failure.name === "Abandoned") failure = error;
+        token.cancel("a sibling failed; this branch was abandoned");
+      } finally {
+        lane.release();
       }
-    };
-    await Promise.all(Array.from({ length: width }, worker));
+    }));
     token.detach();
     if (failure) throw failure;
     return results;
@@ -914,7 +976,7 @@ async function runAgent(run, spec) {
     handlers.gather_rlm = named(["pieces", "instruction", "tools", "schema"], async ({ pieces, instruction: asked, tools: granted, schema }) => {
       if (!canRecurse) throw new EngineError("RuntimeError", words.TOO_DEEP);
       await permitted(pieces);
-      return spread(pieces, (item, token) => child(item, asked, token, granted, schema));
+      return spread(pieces, (item, token, lane) => child(item, asked, token, granted, schema, { lane }));
     });
   }
   if (background) {
@@ -969,7 +1031,10 @@ async function runAgent(run, spec) {
         return handler(args, kwargs);
       })
       .then(
-        (value) => JSON.stringify({ ok: true, value: value ?? null }),
+        (value) => {
+          if (name === activity?.schedule && value === true) activityScheduled = true;
+          return JSON.stringify({ ok: true, value: value ?? null });
+        },
         (error) => JSON.stringify({ ok: false, error: describe(error) }),
       )
       .finally(() => {
@@ -981,9 +1046,23 @@ async function runAgent(run, spec) {
   const prepared = run.runtimePrepare ? await callback(run, runId, "runtime_prepare", {
     prompt: given, bridges: Object.keys(handlers), sessionId, owner,
   }, agent.token) : {};
+  const activity = prepared.activityWait;
+  let activityScheduled = false;
   for (const name of prepared.hostFunctions ?? []) {
+    if (name === activity?.status) continue;
     handlers[name] = (args, kwargs) => callback(run, runId, "host", { name, args, kwargs }, agent.token);
   }
+  const pollActivity = async () => {
+    while (true) {
+      const status = await callback(run, runId, "host", { name: activity.status }, agent.token);
+      if (typeof status?.event === "string") return status;
+      const delay = status?.retry_after;
+      if (!(typeof delay === "number" && delay > 0 && delay <= 300)) {
+        throw new EngineError("RuntimeError", typeof status === "string" ? status : "invalid activity wait status");
+      }
+      await agent.token.race(sleep(delay * 1000));
+    }
+  };
   let setup;
   try {
     if (hasSession && activeSessions.has(sessionId)) {
@@ -1113,6 +1192,13 @@ async function runAgent(run, spec) {
     const showsAll = !config.enable_first_look_guard || logicCall("shows_everything", given);
 
     for (let step = 1; step <= config.max_steps; step += 1) {
+      if (activityScheduled) {
+        activityScheduled = false;
+        emit("child_status", { run_id: runId, status: "waiting" });
+        const outcome = await (spec.lane ? spec.lane.park(pollActivity) : pollActivity());
+        emit("child_status", { run_id: runId, status: "running" });
+        messages.push({ role: "user", content: "Activity wait ended: " + JSON.stringify(outcome) });
+      }
       if (background) {
         for (const message of background.drain(runId)) messages.push({ role: "user", content: String(message) });
       }

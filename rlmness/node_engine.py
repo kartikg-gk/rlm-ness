@@ -264,7 +264,8 @@ def _answer(run: _Run, kind: str, args: dict, agent_id=None):
         functions = prepared.get("host_functions", {})
         run.agent_functions[agent_id] = functions
         return {"hostFunctions": sorted(functions), "startup": prepared.get("startup", ""),
-                "cellPolicy": prepared.get("cell_policy")}
+                "cellPolicy": prepared.get("cell_policy"),
+                "activityWait": prepared.get("activity_wait")}
     if kind == "model":
         answer = run.backend.complete(args["messages"], model=args["model"])
         text, usage, reasoning = answer if len(answer) == 3 else (*answer, None)
